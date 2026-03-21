@@ -1,11 +1,13 @@
 """Корневая точка входа приложения.
 
-Файл запускает оркестратор и выводит пользователю только итоговый ответ модели.
+Файл запускает оркестратор и выводит пользователю только красиво отформатированный 
+итоговый ответ модели.
 """
 
 from __future__ import annotations
 
 import os
+import json
 import warnings
 
 from dotenv import load_dotenv
@@ -23,35 +25,68 @@ GRAPH_RECURSION_LIMIT = int(os.getenv("GRAPH_RECURSION_LIMIT", "25"))
 
 
 def _extract_model_answer(result: dict) -> str:
-    """Достает финальный ответ модели из state.history.
+    """Достает и красиво форматирует финальный ответ из состояния графа."""
+    
+    # 1. Если отработал SeparationMethodsAgent
+    sep_res = result.get("separation_result", {})
+    if sep_res and not sep_res.get("error"):
+        lines = [f"🧪 План разделения: {sep_res.get('target_name', 'Смесь')}"]
+        
+        for i, rec in enumerate(sep_res.get("suggestions", []), 1):
+            lines.append(f"\n{i}. Метод: {rec.get('method', 'Не указан')} (Оценка: {rec.get('score', 0)})")
+            lines.append(f"   Обоснование: {rec.get('rationale', '')}")
+            
+            if rec.get("prerequisites"):
+                lines.append("   Требования:")
+                for p in rec["prerequisites"]:
+                    lines.append(f"    - {p}")
+                    
+            if rec.get("limitations"):
+                lines.append("   Ограничения:")
+                for limit in rec["limitations"]:
+                    lines.append(f"    - {limit}")
+                    
+        if sep_res.get("warnings"):
+            lines.append("\n⚠️ Предупреждения:")
+            for w in sep_res["warnings"]:
+                lines.append(f"  - {w}")
+                
+        return "\n".join(lines)
 
-    Приоритет:
-    1. Последний ответ Supervisor (output.summary / output.prediction).
-    2. Последний output любого агента.
-    3. Сообщение-заглушка.
-    """
+    # 2. Если отработал StructureAnalyzer (пока выводим базово)
+    prop_res = result.get("properties", {})
+    if prop_res and not prop_res.get("error"):
+        return f"🔬 Свойства молекулы:\n{json.dumps(prop_res, ensure_ascii=False, indent=2)}"
 
+    # 3. Если отработал MixtureReactionAgent (пока выводим базово)
+    mix_res = result.get("mixture_reaction", {})
+    if mix_res and not mix_res.get("error"):
+        return f"⚗️ Продукты реакции:\n{json.dumps(mix_res, ensure_ascii=False, indent=2)}"
+
+    # 4. Fallback: если структурированных ответов нет или была ошибка, 
+    # ищем ответ в истории (как было раньше)
     history = result.get("history", [])
     if not isinstance(history, list):
         return "Модель не вернула корректную историю ответов."
 
-    # 1) Предпочитаем ответ Supervisor
     for item in reversed(history):
         if not isinstance(item, dict):
             continue
-        if item.get("agent") != "Supervisor":
-            continue
-
+        
+        # Если агент вернул ошибку, выводим её
         output = item.get("output")
-        if isinstance(output, dict):
-            summary = output.get("summary") or output.get("prediction")
-            if summary:
-                return str(summary)
-            return str(output)
-        if output is not None:
-            return str(output)
+        if isinstance(output, dict) and output.get("error"):
+            return f"❌ Ошибка от агента {item.get('agent')}: {output.get('error')}"
 
-    return "Supervisor не вернул финальный ответ."
+        if item.get("agent") == "Supervisor":
+            if isinstance(output, dict):
+                summary = output.get("summary") or output.get("prediction")
+                if summary:
+                    return str(summary)
+            if output is not None:
+                return str(output)
+
+    return "Supervisor не вернул финальный ответ или графу не хватило данных."
 
 
 if __name__ == "__main__":
@@ -67,7 +102,7 @@ if __name__ == "__main__":
             "task": user_input,
             "target_molecule": "",
             "mixture_input": {},
-            "separation_task": user_input,
+            "separation_task": user_input, # Передаем запрос сюда для SeparationMethodsAgent
             "history": [],
             "properties": {},
             "mixture_reaction": {},
@@ -76,11 +111,16 @@ if __name__ == "__main__":
         }
 
         result = app.invoke(  # type: ignore
-            initial_state,
+            initial_state, # type: ignore
             {"recursion_limit": GRAPH_RECURSION_LIMIT},
         )
+        
         answer = _extract_model_answer(result)
-        print(f"\nОтвет модели:\n{answer}")
+        print("\n" + "="*50)
+        print("ОТВЕТ МОДЕЛИ:")
+        print("="*50)
+        print(answer)
+        print("="*50 + "\n")
 
     except Exception as err:
         logger.error(f"Ошибка при запуске приложения: {err}")

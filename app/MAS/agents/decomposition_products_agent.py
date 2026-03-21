@@ -1,8 +1,6 @@
 """Агент выбора методов разделения смеси.
 
-Важно: агент инициализирует модель через `init_chat_model` с явным `model_provider`.
-Это устраняет ошибку вида:
-"Unable to infer model provider for model='openai/...'."
+Агент использует LangChain-модель и возвращает структурированный JSON-ответ.
 """
 
 from __future__ import annotations
@@ -33,13 +31,7 @@ class SeparationMethodsAgent:
         temperature: float = 0.0,
         system_prompt: Optional[str] = None,
     ) -> None:
-        """Инициализирует LLM-агента.
-
-        Args:
-            model: Имя модели.
-            temperature: Температура генерации.
-            system_prompt: Системный промпт (можно переопределить).
-        """
+        """Инициализирует LLM-агента."""
         if not VSEGPT_API_KEY:
             raise ValueError("VSEGPT_API_KEY не задан в окружении.")
 
@@ -81,16 +73,24 @@ class SeparationMethodsAgent:
         )
 
     @staticmethod
-    def _extract_content(agent_state: Dict[str, Any]) -> str:
-        """Извлекает текст ответа из состояния LangChain-агента."""
-        if agent_state.get("structured_response") is not None:
-            structured_response = agent_state["structured_response"]
-            if isinstance(structured_response, str):
-                return structured_response
-            try:
-                return json.dumps(structured_response, ensure_ascii=False)
-            except Exception:
-                return str(structured_response)
+    def _extract_content(agent_state: Any) -> str:
+        """Извлекает текст ответа из разных форматов состояния агента."""
+        if isinstance(agent_state, str):
+            return agent_state
+
+        if hasattr(agent_state, "content"):
+            return str(getattr(agent_state, "content", ""))
+
+        if not isinstance(agent_state, dict):
+            return str(agent_state)
+
+        if "output" in agent_state:
+            output = agent_state.get("output")
+            return output if isinstance(output, str) else str(output)
+
+        structured = agent_state.get("structured_response")
+        if structured is not None:
+            return structured if isinstance(structured, str) else json.dumps(structured, ensure_ascii=False)
 
         messages = agent_state.get("messages") or []
         if not messages:
@@ -111,7 +111,7 @@ class SeparationMethodsAgent:
 
     @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:
-        """Пытается распарсить JSON, включая fallback для fenced-блоков."""
+        """Пытается распарсить JSON, включая fallback из текста."""
         text = (text or "").strip()
 
         if text.startswith("```"):
