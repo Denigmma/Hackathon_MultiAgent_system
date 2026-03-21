@@ -259,7 +259,7 @@ class StructurePropertiesAgent:
             state["properties"] = result
             state.setdefault("history", []).append(
                 {
-                    "agent": "structure_properties",
+                    "agent": "StructureAnalyzer",
                     "input": smiles,
                     "output": result,
                 }
