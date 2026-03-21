@@ -9,6 +9,7 @@ from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 
 from app.NeuralSearch.main import main as neural_search_main
+
 # from app.RAG.main import main as rag_main
 
 MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano")
@@ -59,7 +60,6 @@ class SeparationMethodsAgent:
             ),
         )
 
-
     # def _rag_tool(self):
     #     @tool("rag_search")
     #     def rag_search(query: str) -> str:
@@ -93,7 +93,6 @@ class SeparationMethodsAgent:
 
         return evaluate_expression
 
-
     def run(self, task: str) -> Dict[str, Any]:
         state = self.agent.invoke(
             {"messages": [{"role": "user", "content": task}]}
@@ -108,3 +107,38 @@ class SeparationMethodsAgent:
                 "error": "invalid_json",
                 "raw": str(state)
             }
+
+    def as_tool(self):
+        """Возвращает агент как LangChain tool."""
+
+        agent_self = self
+
+        @tool("separation_methods")
+        def separation_methods(task: str) -> dict:
+            return agent_self.run(task)
+
+        return separation_methods
+
+    def as_node(self):
+        """Возвращает callable-узел для LangGraph."""
+
+        agent_self = self
+
+        def node(state: Dict[str, Any]) -> Dict[str, Any]:
+            task = state.get("task") or state.get("separation_task") or ""
+            if not isinstance(task, str):
+                task = json.dumps(task, ensure_ascii=False)
+
+            result = agent_self.run(task, context=state.get("context"))
+
+            state["separation_result"] = result
+            state.setdefault("history", []).append(
+                {
+                    "agent": "SeparationMethodsAgent",
+                    "input": task,
+                    "output": result,
+                }
+            )
+            return state
+
+        return node
