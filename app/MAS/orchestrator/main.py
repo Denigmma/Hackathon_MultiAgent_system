@@ -21,18 +21,18 @@ from rdkit import Chem, RDLogger
 # Убираем шум RDKit parse ошибок в консоли
 RDLogger.DisableLog("rdApp.error")
 
-# Поддержка запуска файла напрямую из папки Orchestrator
+# Поддержка запуска файла напрямую из папки orchestrator
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.Agents.agents.properties_agent import (  # noqa: E402
+from app.MAS.agents.properties_agent import (  # noqa: E402
     StructurePropertiesAgent as PropertiesAgentImpl,
 )
-from app.Agents.agents.reagent_selection_agent import (  # noqa: E402
+from app.MAS.agents.reagent_selection_agent import (  # noqa: E402
     ReagentSelectionAgent,
 )
-from app.Agents.agents.structure_agent import (  # noqa: E402
+from app.MAS.agents.structure_agent import (  # noqa: E402
     StructurePropertiesAgent as StructureAgentImpl,
 )
 
@@ -246,7 +246,7 @@ SUPERVISOR_PROMPT = PROMPTS[SUPERVISOR_BINDING.system_prompt_key]
 FINAL_SYSTEM_PROMPT = PROMPTS[FINAL_BINDING.system_prompt_key]
 FINAL_USER_PROMPT = PROMPTS[FINAL_BINDING.user_prompt_key] if FINAL_BINDING.user_prompt_key else ""
 
-# Инициализируем существующих агентов из app/Agents/agents
+# Инициализируем существующих агентов из app/MAS/agents
 structure_agent = StructureAgentImpl(model=supervisor_llm)
 properties_agent = PropertiesAgentImpl(llm=supervisor_llm)
 reagent_selection_agent = ReagentSelectionAgent(model=supervisor_llm)
