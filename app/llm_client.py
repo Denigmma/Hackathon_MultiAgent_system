@@ -87,7 +87,7 @@ class VseGPTConfig:
     base_url: str = "https://api.vsegpt.ru/v1"
     model: str = "anthropic/claude-3-haiku"
     temperature: float = 0.7
-    max_tokens: int = 3000
+    max_tokens: int = None # type: ignore
     n: int = 1
     default_headers: Dict[str, str] = field(
         default_factory=lambda: {"X-Title": "My App"}
