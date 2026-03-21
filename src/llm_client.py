@@ -419,7 +419,6 @@ class VseGPTWrapper:
         return {
             "data": data,
             "raw_text": text,
-            "raw": response,
         }
 
     def complete_text(

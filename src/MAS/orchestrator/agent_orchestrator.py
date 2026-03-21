@@ -84,18 +84,11 @@ llm = VseGPTWrapper(config)
 
 
 def _to_log_text(value: Any, max_chars: int = LOG_VALUE_MAX_CHARS) -> str:
-    """Сериализует значение для безопасного логирования.
-
-    Args:
-        value: Произвольный объект для вывода в лог.
-        max_chars: Максимально допустимая длина строки в логе.
-
-    Returns:
-        Строка, ограниченная `max_chars`, чтобы не раздувать логи слишком
-        длинными JSON-ответами моделей.
-    """
     if isinstance(value, (dict, list)):
-        text = json.dumps(value, ensure_ascii=False)
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            text = str(value)
     else:
         text = str(value)
 
@@ -372,20 +365,16 @@ Worker-агенты и условия готовности:
 
 
 def _parse_supervisor_decision(result: Any) -> tuple[str, str]:
-    """Извлекает `next_node` и `user_message` из ответа Supervisor LLM.
-
-    Args:
-        result: Объект ответа, полученный из `llm.ask(...)`.
-
-    Returns:
-        Кортеж `(next_node, user_message)`. При невалидном ответе
-        возвращает `(FINISH, "")`.
-    """
+    """Извлекает `next_node` и `user_message` из ответа Supervisor LLM."""
     if not isinstance(result, dict):
         return "FINISH", ""
 
-    next_node = str(result.get("next_node", "FINISH"))
-    user_message = str(result.get("user_message", "")).strip()
+    payload = result.get("data", result)
+    if not isinstance(payload, dict):
+        return "FINISH", ""
+
+    next_node = str(payload.get("next_node", "FINISH"))
+    user_message = str(payload.get("user_message", "")).strip()
     return next_node, user_message
 
 
