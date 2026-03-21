@@ -1,68 +1,3 @@
-"""
-Модуль StructurePropertiesAgent
-===============================
-
-Этот модуль предоставляет инструмент для физико-химического анализа молекул
-на основе их SMILES-представления. Использует библиотеку RDKit для расчета
-дескрипторов и применяет эвристические правила для оценки базовых свойств вещества.
-
-Модуль спроектирован с учетом легкой интеграции в LLM-пайплайны и агенты (LangChain / LangGraph).
-
-Основные возможности
--------------------
-1. Вычисление дескрипторов: Расчет 20 ключевых метрик (MolWt, LogP, TPSA, количество доноров/акцепторов водорода, кольца и т.д.).
-2. Эвристическая оценка: На основе дескрипторов модуль классифицирует молекулу по следующим параметрам:
-    - Растворимость (solubility): high, medium, low (на основе LogP и TPSA).
-    - Токсичность (toxicity): high, medium, low (на основе LogP, массы и FractionCSP3).
-    - Лекарственное подобие (drug_likeness): high, medium, low (оценка нарушений "Правила пяти" Липински).
-    - Гибкость (rigidity): rigid, moderate, flexible (на основе количества вращающихся связей).
-
-Интерфейс и Использование
--------------------------
-Инициализация:
-    agent = StructurePropertiesAgent(llm=None, temperature=0.0)
-    # Параметры llm и temperature оставлены для совместимости с интерфейсами агентов
-    # и в базовом расчете не используются.
-
-1. Стандартный вызов (Standalone)
-    Используйте метод `run()`, если хотите получить полный анализ молекулы напрямую.
-
-    >>> result = agent.run("CCO")
-    >>> print(result["prediction"]["solubility"])
-    'high'
-
-    Возвращает словарь формата:
-    {
-        "input": "SMILES",
-        "descriptors": {...}, # 20 дескрипторов RDKit
-        "prediction": {...}   # Эвристические оценки (растворимость, токсичность и т.д.)
-    }
-
-2. Интеграция с LangChain (Tools)
-    Используйте метод `as_tool()`, чтобы передать этот класс как инструмент для LLM.
-
-    >>> tools = [agent.as_tool()]
-    >>> # Теперь агент может вызывать инструмент `analyze_structure(smiles)`
-
-3. Интеграция с графовыми пайплайнами (LangGraph)
-    Используйте метод `as_node()`, если строите state-graph приложения.
-    Ожидает на вход словарь состояния (state), в котором есть ключ `target_molecule` со строкой SMILES.
-
-    >>> node_func = agent.as_node()
-    >>> new_state = node_func({"target_molecule": "CCO"})
-    # Результат будет записан в state["properties"], а также добавится лог в state["history"].
-
-4. Прямой расчет дескрипторов (без эвристик)
-    Метод `compute_descriptors` доступен как статический, если нужны только "сухие" цифры.
-
-    >>> desc = StructurePropertiesAgent.compute_descriptors("CCO")
-
-Обработка ошибок
-----------------
-Если на вход подается невалидный SMILES, методы не падают с ошибкой (Exception),
-а возвращают словарь с ключом "error": {"error": "Invalid SMILES"}.
-"""
-
 from typing import Any, Dict, Optional
 
 from rdkit import Chem
@@ -253,7 +188,7 @@ class StructurePropertiesAgent:
             state["properties"] = result
             state.setdefault("history", []).append(
                 {
-                    "agent": "structure_properties",
+                    "agent": "StructureAnalyzer",
                     "input": smiles,
                     "output": result,
                 }

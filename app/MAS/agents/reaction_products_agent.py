@@ -1,9 +1,16 @@
 import json
+import os
 from typing import Any, Dict, List, Optional, Union
 
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
+
+MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano-thinking-xhigh")
+MODEL_PROVIDER_AGENT = os.getenv("MODEL_PROVIDER_AGENT", "openai")
+VSEGPT_API_KEY = os.getenv("VSEGPT_API_KEY", "")
+BASE_URL = os.getenv("URL", "https://api.vsegpt.ru/v1")
+AGENT_TIMEOUT_SECONDS = float(os.getenv("AGENT_TIMEOUT_SECONDS", "60"))
 
 
 class MixtureReactionAgent:
@@ -19,12 +26,22 @@ class MixtureReactionAgent:
 
     def __init__(
         self,
-        model: str = "openai:gpt-5.2",
+        model: str = MODEL_AGENT,
         temperature: float = 0.0,
         max_substances: int = 20,
     ):
+        if not VSEGPT_API_KEY:
+            raise ValueError("VSEGPT_API_KEY не задан в окружении.")
+
         self.max_substances = max_substances
-        self.model = init_chat_model(model, temperature=temperature)
+        self.model = init_chat_model(
+            model,
+            model_provider=MODEL_PROVIDER_AGENT,
+            temperature=temperature,
+            api_key=VSEGPT_API_KEY,
+            base_url=BASE_URL,
+            timeout=AGENT_TIMEOUT_SECONDS,
+        )
 
         self.agent = create_agent(
             model=self.model,
@@ -460,7 +477,7 @@ class MixtureReactionAgent:
             state["mixture_reaction"] = result
             state.setdefault("history", []).append(
                 {
-                    "agent": "mixture_reaction",
+                    "agent": "MixtureReactionAgent",
                     "input": payload,
                     "output": result,
                 }
