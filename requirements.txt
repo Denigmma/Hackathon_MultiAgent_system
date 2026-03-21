@@ -7,3 +7,8 @@ openai==2.29.0
 pydantic==2.12.5
 python-dotenv==1.2.2
 rdkit==2025.9.6
+
+requests==2.32.3
+beautifulsoup4==4.12.3
+scikit-learn==1.5.2
+numpy==2.1.3
