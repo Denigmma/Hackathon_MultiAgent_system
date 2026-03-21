@@ -4,7 +4,7 @@ import enum
 import re
 from typing import List, Sequence
 
-from app.NeuralSearch.models import get_llm
+from src.NeuralSearch.models import get_llm
 
 
 class ParaphaseMode(enum.Enum):

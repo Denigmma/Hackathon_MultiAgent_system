@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from app.llm_client import VseGPTConfig, VseGPTWrapper
+from src.llm_client import VseGPTConfig, VseGPTWrapper
 
 
 @dataclass(frozen=True)

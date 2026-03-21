@@ -8,7 +8,7 @@ from urllib.parse import quote_plus
 import requests
 from bs4 import BeautifulSoup
 
-from app.NeuralSearch.url_parser import extract_relevant, parse_url
+from src.NeuralSearch.url_parser import extract_relevant, parse_url
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "

@@ -5,10 +5,10 @@ import json
 from dataclasses import asdict, dataclass
 from typing import List, Sequence, Tuple
 
-from app.NeuralSearch.answer_generator import generate_answer
-from app.NeuralSearch.paraphrase import ParaphaseMode, paraphrase_query
-from app.NeuralSearch.reranker import rerank_documents
-from app.NeuralSearch.web_search import search_web
+from src.NeuralSearch.answer_generator import generate_answer
+from src.NeuralSearch.paraphrase import ParaphaseMode, paraphrase_query
+from src.NeuralSearch.reranker import rerank_documents
+from src.NeuralSearch.web_search import search_web
 
 Document = Tuple[str, str]
 

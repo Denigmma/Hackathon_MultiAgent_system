@@ -10,8 +10,8 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 
-from app.NeuralSearch.main import main as neural_search_main
-# from app.RAG.main import main as rag_main
+from src.NeuralSearch.main import main as neural_search_main
+# from src.RAG.main import main as rag_main
 
 MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano-thinking-xhigh")
 MODEL_PROVIDER_AGENT = os.getenv("MODEL_PROVIDER_AGENT", "openai")

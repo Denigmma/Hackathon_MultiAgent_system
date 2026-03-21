@@ -25,10 +25,10 @@ from typing import Annotated, Any, Callable, Dict, List, TypedDict
 from langgraph.graph import END, START, StateGraph
 from loguru import logger
 
-from app.llm_client import VseGPTConfig, VseGPTWrapper
-from app.MAS.agents.decomposition_products_agent import SeparationMethodsAgent
-from app.MAS.agents.properties_agent import StructurePropertiesAgent
-from app.MAS.agents.reaction_products_agent import MixtureReactionAgent
+from src.llm_client import VseGPTConfig, VseGPTWrapper
+from src.MAS.agents.decomposition_products_agent import SeparationMethodsAgent
+from src.MAS.agents.properties_agent import StructurePropertiesAgent
+from src.MAS.agents.reaction_products_agent import MixtureReactionAgent
 
 
 API_KEY = os.getenv("VSEGPT_API_KEY", "")

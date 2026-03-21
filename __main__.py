@@ -22,7 +22,7 @@ warnings.filterwarnings(
     message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.",
 )
 
-from app.MAS.orchestrator.agent_orchestrator import app
+from src.MAS.orchestrator.agent_orchestrator import app
 
 GRAPH_RECURSION_LIMIT = int(os.getenv("GRAPH_RECURSION_LIMIT", "25"))
 

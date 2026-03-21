@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Sequence, Tuple
 
-from app.NeuralSearch.models import get_llm
+from src.NeuralSearch.models import get_llm
 
 Document = Tuple[str, str]
 
