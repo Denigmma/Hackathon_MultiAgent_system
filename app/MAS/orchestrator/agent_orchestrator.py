@@ -476,7 +476,7 @@ def _timed_worker_node(
     return wrapped
 
 
-structure_agent_instance = StructurePropertiesAgent(llm=llm, temperature=0.3)
+structure_agent_instance = StructurePropertiesAgent(temperature=0.01)
 structure_node_legacy = structure_agent_instance.as_node()
 
 try:
@@ -487,8 +487,7 @@ except Exception as exc:
 
 try:
     separation_agent_instance = SeparationMethodsAgent(
-        model=MODEL_AGENT,
-        temperature=0.0,
+        temperature=0.01,
     )
     separation_node_legacy = separation_agent_instance.as_node()
 except Exception as exc:
