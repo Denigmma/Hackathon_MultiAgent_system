@@ -4,7 +4,8 @@
 from loguru import logger
 from dotenv import load_dotenv
 load_dotenv()
-from app.Agents.Orchestrator.agent_orchestrator import app
+# from app.Agents.Orchestrator.agent_orchestrator import app
+from app.MAS.orchestrator.main import main_cli
 
 
 if __name__ == "__main__":
