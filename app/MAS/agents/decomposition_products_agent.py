@@ -1,4 +1,5 @@
-"""Агент выбора методов разделения смеси.
+"""
+Агент выбора методов разделения смеси.
 
 Агент использует LangChain-модель и возвращает структурированный JSON-ответ.
 """
@@ -13,6 +14,9 @@ from typing import Any, Dict, Optional
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
+
+from app.NeuralSearch.main import main as neural_search_main
+# from app.RAG.main import main as rag_main
 
 MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano-thinking-xhigh")
 MODEL_PROVIDER_AGENT = os.getenv("MODEL_PROVIDER_AGENT", "openai")
@@ -135,15 +139,124 @@ class SeparationMethodsAgent:
                     pass
             return {"error": "Invalid JSON from LLM", "raw": text}
 
+    @staticmethod
+    def _normalize_text(data: Any) -> str:
+        """Приводит ответ поиска к строке."""
+        if data is None:
+            return ""
+        if isinstance(data, str):
+            return data.strip()
+        if isinstance(data, dict):
+            return json.dumps(data, ensure_ascii=False, indent=2)
+        if isinstance(data, list):
+            parts = []
+            for item in data:
+                parts.append(SeparationMethodsAgent._normalize_text(item))
+            return "\n".join([p for p in parts if p.strip()]).strip()
+        return str(data).strip()
+
+    @staticmethod
+    def _looks_useful(text: str) -> bool:
+        """
+        Определяет, есть ли в результате что-то полезное.
+        Здесь используется мягкая эвристика: не пусто и не технический мусор.
+        """
+        text = (text or "").strip()
+        if not text:
+            return False
+
+        low = text.lower()
+
+        bad_markers = [
+            "not found",
+            "no results",
+            "empty",
+            "error",
+            "exception",
+            "traceback",
+            "null",
+            "none",
+            "[]",
+            "{}",
+        ]
+        if any(marker in low for marker in bad_markers):
+            return False
+
+        # Должно быть хотя бы немного содержательного текста
+        return len(text) >= 30
+
+    def _search_with_rag(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """Ищет релевантный контекст через RAG."""
+        payload = {
+            "task": task,
+            "context": context or {},
+        }
+
+        try:
+            result = rag_main(payload)
+        except TypeError:
+            # На случай, если main принимает просто строку
+            try:
+                result = rag_main(task)
+            except Exception as exc:
+                return f"RAG_ERROR: {exc}"
+        except Exception as exc:
+            return f"RAG_ERROR: {exc}"
+
+        return self._normalize_text(result)
+
+    def _search_with_neural(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """Ищет релевантный контекст через NeuralSearch."""
+        payload = {
+            "task": task,
+            "context": context or {},
+        }
+
+        try:
+            result = neural_search_main(payload)
+        except TypeError:
+            try:
+                result = neural_search_main(task)
+            except Exception as exc:
+                return f"NEURAL_SEARCH_ERROR: {exc}"
+        except Exception as exc:
+            return f"NEURAL_SEARCH_ERROR: {exc}"
+
+        return self._normalize_text(result)
+
+    def _build_augmented_prompt(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Сначала ищет через RAG.
+        Если RAG не дал полезного результата — использует NeuralSearch.
+        """
+        rag_result = self._search_with_rag(task, context=context)
+
+        if self._looks_useful(rag_result):
+            source_block = f"Релевантный контекст из RAG:\n{rag_result}"
+        else:
+            neural_result = self._search_with_neural(task, context=context)
+            if self._looks_useful(neural_result):
+                source_block = f"Релевантный контекст из NeuralSearch:\n{neural_result}"
+            else:
+                source_block = (
+                    "Релевантный контекст не найден ни через RAG, ни через NeuralSearch."
+                )
+
+        prompt = task.strip()
+
+        if context:
+            prompt += "\n\nДополнительный контекст:\n" + json.dumps(context, ensure_ascii=False, indent=2)
+
+        prompt += "\n\n" + source_block
+        return prompt
+
     def run(
             self,
             task: str,
             context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Запускает агента и возвращает JSON-совместимый dict."""
-        prompt = task.strip()
-        if context:
-            prompt += "\n\nКонтекст:\n" + json.dumps(context, ensure_ascii=False, indent=2)
+        prompt = self._build_augmented_prompt(task, context=context)
 
         state = self.agent.invoke(
             {

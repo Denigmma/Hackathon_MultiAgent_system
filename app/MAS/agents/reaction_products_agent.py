@@ -6,6 +6,9 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 
+from app.NeuralSearch.main import main as neural_search_main
+from app.RAG.main import main as rag_main
+
 MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano-thinking-xhigh")
 MODEL_PROVIDER_AGENT = os.getenv("MODEL_PROVIDER_AGENT", "openai")
 VSEGPT_API_KEY = os.getenv("VSEGPT_API_KEY", "")
@@ -17,18 +20,17 @@ class MixtureReactionAgent:
     """
     Агент для анализа смеси веществ на базе LangChain v1.
 
-    Идея:
-    - LLM сама решает, какие инструменты вызвать;
-    - инструменты дают ей химические эвристики и массовые доли;
-    - итог возвращается как dict;
-    - есть as_tool() и as_node() для интеграции в LangChain / графы.
+    Логика retrieval:
+    1) сначала ищем полезный контекст через RAG;
+    2) если RAG не дал ничего полезного — пробуем NeuralSearch;
+    3) найденный контекст передаём LLM как дополнительный контекст.
     """
 
     def __init__(
-        self,
-        model: str = MODEL_AGENT,
-        temperature: float = 0.0,
-        max_substances: int = 20,
+            self,
+            model: str = MODEL_AGENT,
+            temperature: float = 0.0,
+            max_substances: int = 20,
     ):
         if not VSEGPT_API_KEY:
             raise ValueError("VSEGPT_API_KEY не задан в окружении.")
@@ -48,7 +50,9 @@ class MixtureReactionAgent:
             tools=self._build_tools(),
             system_prompt=(
                 "Ты химический ассистент. Анализируй смесь веществ и условия смешения. "
-                "При необходимости вызывай инструменты. "
+                "Перед ответом учитывай retrieved_prompt, если он содержит полезные химические "
+                "подсказки, факты или правила. Если retrieved_prompt пустой или нерелевантный, "
+                "опирайся на собственные знания и инструменты. "
                 "Верни финальный ответ строго как JSON с полями: "
                 "reaction_likely, summary, products, mixture_composition, warnings. "
                 "Будь консервативен и не выдумывай реакцию без оснований."
@@ -92,6 +96,168 @@ class MixtureReactionAgent:
         except Exception:
             return {"error": "Invalid JSON", "raw": text}
 
+    @staticmethod
+    def _make_retrieval_query(
+            substances: List[Dict[str, Any]],
+            conditions: Optional[Dict[str, Any]],
+            context: Optional[str],
+    ) -> str:
+        substance_names = ", ".join(
+            str(s.get("name", "")).strip() for s in substances if s.get("name")
+        ) or "unknown substances"
+
+        conditions_text = ""
+        if conditions:
+            conditions_text = ", ".join(
+                f"{k}={v}" for k, v in conditions.items() if v is not None
+            )
+
+        context_text = (context or "").strip()
+
+        query = (
+            f"Chemical mixture analysis prompt. Substances: {substance_names}. "
+            f"Conditions: {conditions_text or 'none'}. "
+            f"Context: {context_text or 'none'}. "
+            f"Find useful chemistry rules, reaction hints, or analysis prompt."
+        )
+        return query
+
+    @staticmethod
+    def _text_from_any(obj: Any) -> str:
+        if obj is None:
+            return ""
+        if isinstance(obj, str):
+            return obj.strip()
+        if isinstance(obj, (int, float, bool)):
+            return str(obj)
+        if isinstance(obj, list):
+            parts = []
+            for item in obj:
+                t = MixtureReactionAgent._text_from_any(item)
+                if t:
+                    parts.append(t)
+            return "\n".join(parts).strip()
+        if isinstance(obj, dict):
+            preferred_keys = (
+                "prompt",
+                "answer",
+                "content",
+                "text",
+                "response",
+                "output",
+                "result",
+                "final",
+                "snippet",
+                "chunks",
+                "documents",
+                "items",
+            )
+            for key in preferred_keys:
+                if key in obj and obj[key]:
+                    txt = MixtureReactionAgent._text_from_any(obj[key])
+                    if txt:
+                        return txt
+            return json.dumps(obj, ensure_ascii=False)
+        return str(obj).strip()
+
+    @staticmethod
+    def _is_useful_retrieval(text: str) -> bool:
+        if not text:
+            return False
+
+        cleaned = text.strip()
+        if len(cleaned) < 40:
+            return False
+
+        low = cleaned.lower()
+        bad_markers = (
+            "not found",
+            "no result",
+            "empty",
+            "error",
+            "invalid",
+            "none",
+            "null",
+            "nothing useful",
+            "no relevant",
+            "no information",
+            "unknown",
+        )
+        if any(marker in low for marker in bad_markers):
+            return False
+
+        return True
+
+    def _call_retriever(self, fn, query: str) -> Dict[str, Any]:
+        raw = fn(query)
+        text = self._text_from_any(raw)
+
+        return {
+            "raw": raw,
+            "text": text,
+            "useful": self._is_useful_retrieval(text),
+        }
+
+    def _retrieve_prompt_context(
+            self,
+            substances: List[Dict[str, Any]],
+            conditions: Optional[Dict[str, Any]],
+            context: Optional[str],
+    ) -> Dict[str, Any]:
+        query = self._make_retrieval_query(substances, conditions, context)
+
+        attempts: List[Dict[str, Any]] = []
+
+        # 1) RAG first
+        try:
+            rag_result = self._call_retriever(rag_main, query)
+            attempts.append(
+                {
+                    "source": "rag",
+                    "useful": rag_result["useful"],
+                    "text": rag_result["text"][:2000],
+                }
+            )
+            if rag_result["useful"]:
+                return {
+                    "source": "rag",
+                    "query": query,
+                    "text": rag_result["text"],
+                    "raw": rag_result["raw"],
+                    "attempts": attempts,
+                }
+        except Exception as e:
+            attempts.append({"source": "rag", "error": str(e)})
+
+        # 2) Fallback to NeuralSearch
+        try:
+            ns_result = self._call_retriever(neural_search_main, query)
+            attempts.append(
+                {
+                    "source": "neural_search",
+                    "useful": ns_result["useful"],
+                    "text": ns_result["text"][:2000],
+                }
+            )
+            if ns_result["useful"]:
+                return {
+                    "source": "neural_search",
+                    "query": query,
+                    "text": ns_result["text"],
+                    "raw": ns_result["raw"],
+                    "attempts": attempts,
+                }
+        except Exception as e:
+            attempts.append({"source": "neural_search", "error": str(e)})
+
+        return {
+            "source": None,
+            "query": query,
+            "text": "",
+            "raw": None,
+            "attempts": attempts,
+        }
+
     def _build_tools(self):
         agent_self = self
 
@@ -104,9 +270,7 @@ class MixtureReactionAgent:
             try:
                 payload = json.loads(payload_json)
             except Exception:
-                return json.dumps(
-                    {"error": "Invalid JSON payload."}, ensure_ascii=False
-                )
+                return json.dumps({"error": "Invalid JSON payload."}, ensure_ascii=False)
 
             substances = payload.get("substances", [])
             items = []
@@ -128,9 +292,7 @@ class MixtureReactionAgent:
                 total_mass += mass
 
             if total_mass <= 0:
-                return json.dumps(
-                    {"total_mass_g": 0.0, "items": []}, ensure_ascii=False
-                )
+                return json.dumps({"total_mass_g": 0.0, "items": []}, ensure_ascii=False)
 
             for item in items:
                 item["mass_fraction_percent"] = round(
@@ -145,20 +307,12 @@ class MixtureReactionAgent:
         @tool("chemistry_rules")
         def chemistry_rules(payload_json: str) -> str:
             """
-            Возвращает химические эвристики:
-            - нейтрализация
-            - кислота + карбонат
-            - аммонийная соль + щёлочь
-            - типовые осадки
-
-            Ожидает JSON вида: {"substances": [...], "conditions": {...}}
+            Возвращает химические эвристики.
             """
             try:
                 payload = json.loads(payload_json)
             except Exception:
-                return json.dumps(
-                    {"error": "Invalid JSON payload."}, ensure_ascii=False
-                )
+                return json.dumps({"error": "Invalid JSON payload."}, ensure_ascii=False)
 
             substances = [agent_self._to_dict(s) for s in payload.get("substances", [])]
             names = {agent_self._norm(s.get("name")) for s in substances}
@@ -186,19 +340,11 @@ class MixtureReactionAgent:
 
             if (names & acids) and (names & bases):
                 acid = next(
-                    (
-                        s["name"]
-                        for s in substances
-                        if agent_self._norm(s.get("name")) in acids
-                    ),
+                    (s["name"] for s in substances if agent_self._norm(s.get("name")) in acids),
                     "acid",
                 )
                 base = next(
-                    (
-                        s["name"]
-                        for s in substances
-                        if agent_self._norm(s.get("name")) in bases
-                    ),
+                    (s["name"] for s in substances if agent_self._norm(s.get("name")) in bases),
                     "base",
                 )
                 matches.append(
@@ -215,19 +361,11 @@ class MixtureReactionAgent:
 
             if (names & acids) and (names & carbonates):
                 acid = next(
-                    (
-                        s["name"]
-                        for s in substances
-                        if agent_self._norm(s.get("name")) in acids
-                    ),
+                    (s["name"] for s in substances if agent_self._norm(s.get("name")) in acids),
                     "acid",
                 )
                 carbonate = next(
-                    (
-                        s["name"]
-                        for s in substances
-                        if agent_self._norm(s.get("name")) in carbonates
-                    ),
+                    (s["name"] for s in substances if agent_self._norm(s.get("name")) in carbonates),
                     "carbonate",
                 )
                 matches.append(
@@ -249,19 +387,11 @@ class MixtureReactionAgent:
 
             if (names & bases) and (names & ammoniums):
                 base = next(
-                    (
-                        s["name"]
-                        for s in substances
-                        if agent_self._norm(s.get("name")) in bases
-                    ),
+                    (s["name"] for s in substances if agent_self._norm(s.get("name")) in bases),
                     "base",
                 )
                 ammonium = next(
-                    (
-                        s["name"]
-                        for s in substances
-                        if agent_self._norm(s.get("name")) in ammoniums
-                    ),
+                    (s["name"] for s in substances if agent_self._norm(s.get("name")) in ammoniums),
                     "ammonium salt",
                 )
                 matches.append(
@@ -271,9 +401,7 @@ class MixtureReactionAgent:
                         "confidence": 0.9,
                         "summary": "Аммонийная соль и щёлочь: вероятно выделение аммиака.",
                         "equation": f"{ammonium} + {base} -> NH3 + H2O + salt",
-                        "products": [
-                            {"name": "ammonia + water + salt", "confidence": 0.9}
-                        ],
+                        "products": [{"name": "ammonia + water + salt", "confidence": 0.9}],
                         "warnings": ["Возможное выделение аммиака."],
                     }
                 )
@@ -312,7 +440,7 @@ class MixtureReactionAgent:
         return [mass_fractions, chemistry_rules]
 
     def _validate_inputs(
-        self, substances: List[Dict[str, Any]], conditions: Optional[Dict[str, Any]]
+            self, substances: List[Dict[str, Any]], conditions: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
         if not substances:
             return {"error": "Список веществ не должен быть пустым."}
@@ -391,10 +519,10 @@ class MixtureReactionAgent:
         return {"total_mass_g": round(total_mass, 6), "items": items}
 
     def run(
-        self,
-        substances: List[Union[Dict[str, Any], Any]],
-        conditions: Optional[Union[Dict[str, Any], Any]] = None,
-        context: Optional[str] = None,
+            self,
+            substances: List[Union[Dict[str, Any], Any]],
+            conditions: Optional[Union[Dict[str, Any], Any]] = None,
+            context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Основной метод анализа смеси.
@@ -407,10 +535,18 @@ class MixtureReactionAgent:
         if validation_error:
             return validation_error
 
+        # 1) Сначала retrieval: RAG -> fallback NeuralSearch
+        retrieved_prompt = self._retrieve_prompt_context(
+            substances=substances_dict,
+            conditions=conditions_dict,
+            context=context,
+        )
+
         payload = {
             "substances": substances_dict,
             "conditions": conditions_dict,
             "context": context,
+            "retrieved_prompt": retrieved_prompt,  # <-- это и отдаём LLM
         }
 
         agent_state = self.agent.invoke(
@@ -430,7 +566,7 @@ class MixtureReactionAgent:
             final_json = {"error": "Unexpected agent output.", "raw": final_json}
 
         if "mixture_composition" not in final_json or not final_json.get(
-            "mixture_composition"
+                "mixture_composition"
         ):
             final_json["mixture_composition"] = self._mass_fractions_local(
                 substances_dict
@@ -438,6 +574,7 @@ class MixtureReactionAgent:
 
         return {
             "input": payload,
+            "retrieval": retrieved_prompt,
             "analysis": final_json,
         }
 

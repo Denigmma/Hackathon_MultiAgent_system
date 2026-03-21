@@ -82,7 +82,7 @@ def interactive_cli() -> None:
         print(result.answer)
 
 
-def main() -> int:
+def main() -> str:
     parser = argparse.ArgumentParser(description="Run integrated NeuralSearch pipeline")
     parser.add_argument("query", nargs="*", help="text query for NeuralSearch")
     parser.add_argument("--expand", action="store_true", help="generate multiple paraphrases")
@@ -91,17 +91,15 @@ def main() -> int:
 
     if not args.query:
         interactive_cli()
-        return 0
 
     query = " ".join(args.query).strip()
     pipeline = NeuralSearchPipeline(expand_queries=args.expand)
     result = pipeline.run(query)
 
     if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        return json.dumps(asdict(result), ensure_ascii=False, indent=2)
     else:
-        print(result.answer)
-    return 0
+        return result.answer
 
 
 if __name__ == "__main__":
