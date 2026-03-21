@@ -51,23 +51,12 @@ class StructurePropertiesAgent:
 
         return {
             "MolWt": round(Descriptors.MolWt(mol), 4),
-            # "ExactMolWt": round(Descriptors.ExactMolWt(mol), 4),
             "LogP": round(Crippen.MolLogP(mol), 4),
             "TPSA": round(rdMolDescriptors.CalcTPSA(mol), 4),
             "NumHDonors": Lipinski.NumHDonors(mol),
             "NumHAcceptors": Lipinski.NumHAcceptors(mol),
             "NumRotatableBonds": Lipinski.NumRotatableBonds(mol),
-            # "NumHeavyAtoms": Lipinski.HeavyAtomCount(mol),
-            # "RingCount": Lipinski.RingCount(mol),
-            # "NumAromaticRings": rdMolDescriptors.CalcNumAromaticRings(mol),
-            # "NumAliphaticRings": rdMolDescriptors.CalcNumAliphaticRings(mol),
             "FractionCSP3": rdMolDescriptors.CalcFractionCSP3(mol),
-            # "LabuteASA": rdMolDescriptors.CalcLabuteASA(mol),
-            # "Chi0": rdMolDescriptors.CalcChi0(mol),
-            # "Chi1": rdMolDescriptors.CalcChi1(mol),
-            # "Kappa1": rdMolDescriptors.CalcKappa1(mol),
-            # "Kappa2": rdMolDescriptors.CalcKappa2(mol),
-            # "Kappa3": rdMolDescriptors.CalcKappa3(mol),
         }
 
     @staticmethod
@@ -130,22 +119,19 @@ class StructurePropertiesAgent:
             "comments": "Heuristic estimates based on extended RDKit descriptors.",
         }
 
-    def run(self, prompt: Dict[str, Any]) -> Dict[str, Any]:
+    def run(self, smiles: str) -> Dict[str, Any]:
         """
         Основной метод выполнения анализа молекулы.
 
         Args:
-            prompt: Словарь с входными данными. Ожидается ключ "smiles".
+            smiles: Строка SMILES.
 
         Returns:
             Словарь с исходным SMILES, дескрипторами и предсказанием.
         """
-        if not isinstance(prompt, dict):
-            return {"error": "Input must be a dictionary."}
-
-        smiles = str(prompt.get("", "")).strip()
+        smiles = (smiles or "").strip()
         if not smiles:
-            return {"error": "Empty input. Please provide a SMILES string in prompt['smiles']."}
+            return {"error": "Empty input. Please provide a SMILES string."}
 
         descriptors = self.compute_descriptors(smiles)
         prediction = self._predict_properties(descriptors)

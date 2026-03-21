@@ -1,1 +1,0 @@
-from app.MAS.agents.properties_agent import StructurePropertiesAgent

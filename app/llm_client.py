@@ -1,3 +1,75 @@
+"""
+Документация к модулю VseGPTWrapper
+===================================
+
+Этот модуль предоставляет удобную оболочку над OpenAI-совместимым API (настроенным по умолчанию на VseGPT).
+Он поддерживает ведение истории диалога, потоковую генерацию, работу с JSON, а также продвинутый двухпроходный режим с самопроверкой (draft -> self-check -> final).
+
+Конфигурация (VseGPTConfig)
+---------------------------
+Для инициализации клиента требуется объект конфигурации `VseGPTConfig`:
+* api_key: str — Ваш API ключ.
+* base_url: str — URL API (по умолчанию "https://api.vsegpt.ru/v1").
+* model: str — Имя модели (по умолчанию "anthropic/claude-3-haiku").
+* temperature: float — Креативность (по умолчанию 0.7).
+* max_tokens: int — Максимальное количество токенов (по умолчанию 3000).
+* n: int — Количество вариантов ответа (по умолчанию 1).
+* default_headers: Dict[str, str] — Заголовки по умолчанию (по умолчанию {"X-Title": "My App"}).
+
+Инициализация
+-------------
+config = VseGPTConfig(api_key="ВАШ_КЛЮЧ")
+llm = VseGPTWrapper(config)
+
+Универсальный метод (Рекомендуемый)
+-----------------------------------
+Самый простой способ взаимодействия — использовать метод `ask`. Он автоматически маршрутизирует запрос под капотом в зависимости от флагов.
+
+* ask(prompt, system_prompt=None, json_mode=False, use_history=False, self_check=False, **kwargs)
+  - prompt: Текст запроса.
+  - json_mode=True: Возвращает распарсенный JSON (или dict с данными самопроверки).
+  - use_history=True: Учитывает и обновляет историю диалога.
+  - self_check=True: Включает двухпроходный режим (модель генерирует черновик, затем проверяет его на ошибки и возвращает исправленный вариант).
+
+Базовые методы генерации
+------------------------
+Если вам нужен более тонкий контроль, используйте специализированные методы:
+
+* complete_text(prompt, system_prompt=None, ...) -> str
+  Одиночный запрос. Возвращает только текст ответа.
+
+* complete_json(prompt, system_prompt=None, ...) -> Any
+  Одиночный запрос, который требует от модели JSON. Возвращает распарсенный JSON (словари/списки).
+
+* chat(user_prompt, system_prompt=None, messages=None, use_history=False, save_to_history=False, ...) -> Dict
+  Основной метод отправки сообщений. Возвращает словарь:
+  {"content": str, "reasoning": str|None, "raw": openai_response_object}
+
+* chat_with_history(user_prompt, system_prompt=None, ...) -> Dict
+  Аналог `chat`, но автоматически читает и сохраняет сообщения в `self.history`.
+
+* stream(user_prompt, system_prompt=None, ...) -> Generator[str]
+  Потоковая генерация ответа. Идеально для длинных текстов, выдает ответ по частям (yield).
+
+Продвинутые методы (Самопроверка / Reasoning)
+---------------------------------------------
+Режим самопроверки заставляет модель сначала написать черновик, а затем выступить в роли "строгого рецензента", найдя и исправив свои же ошибки.
+
+* answer_with_self_check(prompt, system_prompt=None, ...) -> Dict
+  Возвращает словарь с этапами генерации:
+  {"draft": str, "check": Dict (результат проверки), "content": str (финальный ответ)}
+
+* answer_with_self_check_json(prompt, system_prompt=None, ...) -> Dict
+  То же самое, но гарантирует, что финальный ответ парсится как JSON.
+  Возвращает: {"draft": str, "check": Dict, "raw_text": str, "data": Any}
+
+Управление историей и состоянием
+--------------------------------
+* reset_history() — Полностью очищает историю текущего диалога.
+* add_message(role, content) — Ручное добавление сообщения в историю (role обычно "user", "assistant" или "system").
+* set_model(model) — Быстрое изменение модели "на лету" без пересоздания конфига.
+"""
+
 from __future__ import annotations
 
 import json
@@ -17,7 +89,9 @@ class VseGPTConfig:
     temperature: float = 0.7
     max_tokens: int = 3000
     n: int = 1
-    default_headers: Dict[str, str] = field(default_factory=lambda: {"X-Title": "My App"})
+    default_headers: Dict[str, str] = field(
+        default_factory=lambda: {"X-Title": "My App"}
+    )
 
 
 class VseGPTWrapper:
@@ -48,11 +122,11 @@ class VseGPTWrapper:
         self.history.append({"role": role, "content": content})
 
     def _merge_messages(
-            self,
-            user_prompt: Optional[str] = None,
-            messages: Optional[List[Message]] = None,
-            system_prompt: Optional[str] = None,
-            use_history: bool = False,
+        self,
+        user_prompt: Optional[str] = None,
+        messages: Optional[List[Message]] = None,
+        system_prompt: Optional[str] = None,
+        use_history: bool = False,
     ) -> List[Message]:
         merged: List[Message] = []
 
@@ -78,14 +152,14 @@ class VseGPTWrapper:
         return getattr(msg, "reasoning", None)
 
     def _call_chat_completion(
-            self,
-            merged_messages: List[Message],
-            model: Optional[str] = None,
-            temperature: Optional[float] = None,
-            max_tokens: Optional[int] = None,
-            n: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            **kwargs,
+        self,
+        merged_messages: List[Message],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        n: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        **kwargs,
     ) -> Any:
         return self.client.chat.completions.create(
             model=model or self.config.model,
@@ -95,9 +169,11 @@ class VseGPTWrapper:
             n=self.config.n if n is None else n,
             extra_headers=extra_headers or self.config.default_headers,
             **kwargs,
-        )
+        )  # type: ignore
 
-    def _build_internal_reasoning_system_prompt(self, system_prompt: Optional[str] = None) -> str:
+    def _build_internal_reasoning_system_prompt(
+        self, system_prompt: Optional[str] = None
+    ) -> str:
         base = (
             "Ты решаешь задачу внутри, но не показываешь ход рассуждений. "
             "Сначала выведи только итоговый ответ, без внутреннего анализа, без черновиков и без скрытых шагов."
@@ -110,11 +186,11 @@ class VseGPTWrapper:
         return (
             "Проверь следующий ответ на ошибки, противоречия, пропуски и неточности. "
             "Верни строго JSON со следующими полями:\n"
-            '{\n'
+            "{\n"
             '  "ok": boolean,\n'
             '  "issues": [string, ...],\n'
             '  "corrected_answer": string\n'
-            '}\n\n'
+            "}\n\n"
             f"Ответ для проверки:\n{draft_answer}"
         )
 
@@ -125,18 +201,18 @@ class VseGPTWrapper:
             return None
 
     def chat(
-            self,
-            user_prompt: str,
-            system_prompt: Optional[str] = None,
-            messages: Optional[List[Message]] = None,
-            use_history: bool = False,
-            model: Optional[str] = None,
-            temperature: Optional[float] = None,
-            max_tokens: Optional[int] = None,
-            n: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            save_to_history: bool = False,
-            **kwargs,
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        messages: Optional[List[Message]] = None,
+        use_history: bool = False,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        n: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        save_to_history: bool = False,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Обычный запрос к модели.
@@ -170,7 +246,12 @@ class VseGPTWrapper:
         if save_to_history:
             if system_prompt and not use_history and not self.history:
                 self.history.append({"role": "system", "content": system_prompt})
-            elif system_prompt and not use_history and self.history and self.history[0]["role"] != "system":
+            elif (
+                system_prompt
+                and not use_history
+                and self.history
+                and self.history[0]["role"] != "system"
+            ):
                 self.history.insert(0, {"role": "system", "content": system_prompt})
 
             self.history.append({"role": "user", "content": user_prompt})
@@ -183,15 +264,15 @@ class VseGPTWrapper:
         }
 
     def chat_with_history(
-            self,
-            user_prompt: str,
-            system_prompt: Optional[str] = None,
-            model: Optional[str] = None,
-            temperature: Optional[float] = None,
-            max_tokens: Optional[int] = None,
-            n: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            **kwargs,
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        n: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Диалоговый режим: использует self.history.
@@ -211,15 +292,15 @@ class VseGPTWrapper:
         )
 
     def chat_messages(
-            self,
-            messages: List[Message],
-            system_prompt: Optional[str] = None,
-            model: Optional[str] = None,
-            temperature: Optional[float] = None,
-            max_tokens: Optional[int] = None,
-            n: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            **kwargs,
+        self,
+        messages: List[Message],
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        n: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Запрос, когда сообщения уже собраны вручную.
@@ -247,17 +328,17 @@ class VseGPTWrapper:
         }
 
     def stream(
-            self,
-            user_prompt: str,
-            system_prompt: Optional[str] = None,
-            messages: Optional[List[Message]] = None,
-            use_history: bool = False,
-            model: Optional[str] = None,
-            temperature: Optional[float] = None,
-            max_tokens: Optional[int] = None,
-            n: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            **kwargs,
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        messages: Optional[List[Message]] = None,
+        use_history: bool = False,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        n: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        **kwargs,
     ) -> Generator[str, None, None]:
         """
         Потоковая генерация текста.
@@ -286,17 +367,17 @@ class VseGPTWrapper:
                 yield delta
 
     def json_response(
-            self,
-            user_prompt: str,
-            system_prompt: Optional[str] = None,
-            messages: Optional[List[Message]] = None,
-            use_history: bool = False,
-            model: Optional[str] = None,
-            temperature: float = 0.01,
-            max_tokens: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            response_format: Optional[Dict[str, str]] = None,
-            **kwargs,
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        messages: Optional[List[Message]] = None,
+        use_history: bool = False,
+        model: Optional[str] = None,
+        temperature: float = 0.01,
+        max_tokens: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        response_format: Optional[Dict[str, str]] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Запрос с попыткой получить JSON.
@@ -342,14 +423,14 @@ class VseGPTWrapper:
         }
 
     def complete_text(
-            self,
-            prompt: str,
-            system_prompt: Optional[str] = None,
-            model: Optional[str] = None,
-            temperature: Optional[float] = None,
-            max_tokens: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            **kwargs,
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        **kwargs,
     ) -> str:
         """
         Самый простой вариант: prompt -> text.
@@ -366,14 +447,14 @@ class VseGPTWrapper:
         return result["content"]
 
     def complete_json(
-            self,
-            prompt: str,
-            system_prompt: Optional[str] = None,
-            model: Optional[str] = None,
-            temperature: float = 0.01,
-            max_tokens: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            **kwargs,
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.01,
+        max_tokens: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        **kwargs,
     ) -> Any:
         """
         Самый простой JSON-вариант: prompt -> parsed JSON.
@@ -395,21 +476,23 @@ class VseGPTWrapper:
     # -------------------------
 
     def draft_text(
-            self,
-            prompt: str,
-            system_prompt: Optional[str] = None,
-            use_history: bool = False,
-            model: Optional[str] = None,
-            temperature: Optional[float] = None,
-            max_tokens: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            **kwargs,
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        use_history: bool = False,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        **kwargs,
     ) -> str:
         """
         Первый проход: делает внутренний черновик ответа.
         Ход рассуждений наружу не выводится.
         """
-        reasoning_system_prompt = self._build_internal_reasoning_system_prompt(system_prompt)
+        reasoning_system_prompt = self._build_internal_reasoning_system_prompt(
+            system_prompt
+        )
         result = self.chat(
             user_prompt=prompt,
             system_prompt=reasoning_system_prompt,
@@ -423,14 +506,14 @@ class VseGPTWrapper:
         return result["content"]
 
     def self_check_text(
-            self,
-            draft_answer: str,
-            system_prompt: Optional[str] = None,
-            model: Optional[str] = None,
-            temperature: float = 0.0,
-            max_tokens: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            **kwargs,
+        self,
+        draft_answer: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.0,
+        max_tokens: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Второй проход: проверяет черновик и возвращает структурированный результат.
@@ -467,16 +550,16 @@ class VseGPTWrapper:
         }
 
     def answer_with_self_check(
-            self,
-            prompt: str,
-            system_prompt: Optional[str] = None,
-            use_history: bool = False,
-            model: Optional[str] = None,
-            temperature: Optional[float] = None,
-            max_tokens: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            self_check_temperature: float = 0.0,
-            **kwargs,
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        use_history: bool = False,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        self_check_temperature: float = 0.0,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Двухпроходный режим:
@@ -518,16 +601,16 @@ class VseGPTWrapper:
         }
 
     def answer_with_self_check_json(
-            self,
-            prompt: str,
-            system_prompt: Optional[str] = None,
-            use_history: bool = False,
-            model: Optional[str] = None,
-            temperature: Optional[float] = None,
-            max_tokens: Optional[int] = None,
-            extra_headers: Optional[Dict[str, str]] = None,
-            self_check_temperature: float = 0.0,
-            **kwargs,
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        use_history: bool = False,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        self_check_temperature: float = 0.0,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Аналог answer_with_self_check, но для задач, где финальный ответ нужен в JSON.
@@ -572,13 +655,13 @@ class VseGPTWrapper:
         }
 
     def ask(
-            self,
-            prompt: str,
-            system_prompt: Optional[str] = None,
-            json_mode: bool = False,
-            use_history: bool = False,
-            self_check: bool = False,
-            **kwargs,
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        json_mode: bool = False,
+        use_history: bool = False,
+        self_check: bool = False,
+        **kwargs,
     ) -> Any:
         """
         Универсальный метод:

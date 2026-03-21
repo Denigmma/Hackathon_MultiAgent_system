@@ -1,6 +1,12 @@
+"""Агент выбора методов разделения смеси.
+
+Агент использует LangChain-модель и возвращает структурированный JSON-ответ.
+"""
+
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Dict, Optional
 
@@ -8,26 +14,35 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 
+MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano-thinking-xhigh")
+MODEL_PROVIDER_AGENT = os.getenv("MODEL_PROVIDER_AGENT", "openai")
+VSEGPT_API_KEY = os.getenv("VSEGPT_API_KEY", "")
+BASE_URL = os.getenv("URL", "https://api.vsegpt.ru/v1")
+AGENT_TIMEOUT_SECONDS = float(os.getenv("AGENT_TIMEOUT_SECONDS", "60"))
+
 
 class SeparationMethodsAgent:
-    """
-    Агент для выбора методов разделения смеси.
-
-    Вход:
-        - одна строка с задачей;
-        - опционально context как dict.
-
-    Выход:
-        - обычный dict, похожий на JSON.
-    """
+    """Агент для подбора методов разделения смеси."""
 
     def __init__(
             self,
-            model: str = "openai:gpt-5.2",
-            temperature: float = 0.0,
+            model: str = MODEL_AGENT,
+            temperature: float = 0.01,
             system_prompt: Optional[str] = None,
     ) -> None:
-        self.model = init_chat_model(model, temperature=temperature)
+        """Инициализирует LLM-агента."""
+        if not VSEGPT_API_KEY:
+            raise ValueError("VSEGPT_API_KEY не задан в окружении.")
+
+        self.model = init_chat_model(
+            model,
+            model_provider=MODEL_PROVIDER_AGENT,
+            temperature=temperature,
+            api_key=VSEGPT_API_KEY,
+            base_url=BASE_URL,
+            timeout=AGENT_TIMEOUT_SECONDS,
+        )
+
         self.system_prompt = system_prompt or (
             "Ты химический ассистент. Получаешь задачу о разделении смеси как обычный текст. "
             "Нужно выбрать подходящие методы разделения. "
@@ -57,15 +72,24 @@ class SeparationMethodsAgent:
         )
 
     @staticmethod
-    def _extract_content(agent_state: Dict[str, Any]) -> str:
-        if agent_state.get("structured_response") is not None:
-            sr = agent_state["structured_response"]
-            if isinstance(sr, str):
-                return sr
-            try:
-                return json.dumps(sr, ensure_ascii=False)
-            except Exception:
-                return str(sr)
+    def _extract_content(agent_state: Any) -> str:
+        """Извлекает текст ответа из разных форматов состояния агента."""
+        if isinstance(agent_state, str):
+            return agent_state
+
+        if hasattr(agent_state, "content"):
+            return str(getattr(agent_state, "content", ""))
+
+        if not isinstance(agent_state, dict):
+            return str(agent_state)
+
+        if "output" in agent_state:
+            output = agent_state.get("output")
+            return output if isinstance(output, str) else str(output)
+
+        structured = agent_state.get("structured_response")
+        if structured is not None:
+            return structured if isinstance(structured, str) else json.dumps(structured, ensure_ascii=False)
 
         messages = agent_state.get("messages") or []
         if not messages:
@@ -81,10 +105,12 @@ class SeparationMethodsAgent:
                 else:
                     parts.append(str(block))
             return "".join(parts)
+
         return str(content)
 
     @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:
+        """Пытается распарсить JSON, включая fallback из текста."""
         text = (text or "").strip()
 
         if text.startswith("```"):
@@ -94,28 +120,27 @@ class SeparationMethodsAgent:
 
         try:
             data = json.loads(text)
-            return data if isinstance(data, dict) else {"error": "LLM returned non-dict JSON", "raw": data}
+            if isinstance(data, dict):
+                return data
+            return {"error": "LLM returned non-dict JSON", "raw": data}
         except Exception:
-            m = re.search(r"\{.*\}", text, flags=re.DOTALL)
-            if m:
+            match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+            if match:
                 try:
-                    data = json.loads(m.group(0))
-                    return data if isinstance(data, dict) else {"error": "LLM returned non-dict JSON", "raw": data}
+                    data = json.loads(match.group(0))
+                    if isinstance(data, dict):
+                        return data
+                    return {"error": "LLM returned non-dict JSON", "raw": data}
                 except Exception:
                     pass
             return {"error": "Invalid JSON from LLM", "raw": text}
 
-    def run(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Основной метод.
-
-        Параметры:
-            task: строка с задачей для LLM.
-            context: необязательный dict с дополнительными условиями.
-
-        Возвращает:
-            dict с JSON-подобным результатом.
-        """
+    def run(
+            self,
+            task: str,
+            context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Запускает агента и возвращает JSON-совместимый dict."""
         prompt = task.strip()
         if context:
             prompt += "\n\nКонтекст:\n" + json.dumps(context, ensure_ascii=False, indent=2)
@@ -134,19 +159,13 @@ class SeparationMethodsAgent:
         raw = self._extract_content(state)
         parsed = self._parse_json(raw)
 
-        if not isinstance(parsed, dict):
-            parsed = {"error": "Unexpected output", "raw": parsed}
-
         if "warnings" not in parsed:
             parsed["warnings"] = []
 
         return parsed
 
     def as_tool(self):
-        """
-        Возвращает LangChain tool.
-        Tool принимает одну строку с задачей.
-        """
+        """Возвращает агент как LangChain tool."""
 
         agent_self = self
 
@@ -157,10 +176,7 @@ class SeparationMethodsAgent:
         return separation_methods
 
     def as_node(self):
-        """
-        Возвращает callable-узел для графов и пайплайнов.
-        Ожидает state с ключом task или separation_task.
-        """
+        """Возвращает callable-узел для LangGraph."""
 
         agent_self = self
 
@@ -174,7 +190,7 @@ class SeparationMethodsAgent:
             state["separation_result"] = result
             state.setdefault("history", []).append(
                 {
-                    "agent": "separation_methods_agent",
+                    "agent": "SeparationMethodsAgent",
                     "input": task,
                     "output": result,
                 }
