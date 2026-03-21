@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, Optional
+import os
 
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
+
+
+MODEL_AGENT = str(os.getenv("MODEL_AGENT"))
 
 
 class SeparationMethodsAgent:
@@ -23,7 +27,7 @@ class SeparationMethodsAgent:
 
     def __init__(
             self,
-            model: str = "openai:gpt-5.2",
+            model: str = MODEL_AGENT,
             temperature: float = 0.0,
             system_prompt: Optional[str] = None,
     ) -> None:
