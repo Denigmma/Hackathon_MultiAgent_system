@@ -1,111 +1,112 @@
 import json
-from typing import Dict, Any
-
-from langchain.tools import tool
-from langchain.prompts import ChatPromptTemplate
-from langchain.agents import create_openai_functions_agent, AgentExecutor
+from typing import Any, Dict
 
 from rdkit import Chem
-from rdkit.Chem import Descriptors, Crippen, Lipinski
+from rdkit.Chem import Crippen, Descriptors, Lipinski
 
 
 class StructurePropertiesAgent:
     """
-    Агент для анализа структуры молекулы (SMILES)
-    и предсказания базовых физико-химических свойств.
+    Агент для анализа молекулы по SMILES и прогнозирования свойств.
+    Интерфейс сохранён: run(smiles) -> Dict[str, Any]
     """
 
-    def __init__(self, llm):
+    def __init__(self, llm=None):
         self.llm = llm
-        self.tools = self._build_tools()
-        self.agent = self._build_agent()
 
-    def _build_tools(self):
-        @tool
-        def compute_descriptors(smiles: str) -> Dict[str, Any]:
-            """
-            Вычисляет базовые дескрипторы молекулы по SMILES.
-            """
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                return {"error": "Invalid SMILES"}
+    @staticmethod
+    def compute_descriptors(smiles: str) -> Dict[str, Any]:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return {"error": "Invalid SMILES"}
 
-            descriptors = {
-                "MolWt": Descriptors.MolWt(mol),
-                "LogP": Crippen.MolLogP(mol),
-                "NumHDonors": Lipinski.NumHDonors(mol),
-                "NumHAcceptors": Lipinski.NumHAcceptors(mol),
-                "TPSA": Descriptors.TPSA(mol),
-                "NumRotatableBonds": Lipinski.NumRotatableBonds(mol),
-                "NumHeavyAtoms": Descriptors.HeavyAtomCount(mol),
-                "RingCount": Descriptors.RingCount(mol),
-            }
+        return {
+            "MolWt": round(Descriptors.MolWt(mol), 4),
+            "LogP": round(Crippen.MolLogP(mol), 4),
+            "NumHDonors": Lipinski.NumHDonors(mol),
+            "NumHAcceptors": Lipinski.NumHAcceptors(mol),
+            "TPSA": round(Descriptors.TPSA(mol), 4),
+            "NumRotatableBonds": Lipinski.NumRotatableBonds(mol),
+            "NumHeavyAtoms": Descriptors.HeavyAtomCount(mol),
+            "RingCount": Descriptors.RingCount(mol),
+        }
 
-            return descriptors
+    @staticmethod
+    def _predict_from_descriptors(desc: Dict[str, Any]) -> Dict[str, Any]:
+        if "error" in desc:
+            return {"error": desc["error"]}
 
-        @tool
-        def predict_properties(descriptors: Dict[str, Any]) -> Dict[str, Any]:
-            """
-            Использует LLM для интерпретации дескрипторов
-            и прогнозирования свойств молекулы.
-            """
-            prompt = ChatPromptTemplate.from_messages([
-                ("system",
-                 "Ты химический эксперт. По набору дескрипторов молекулы оцени её свойства."),
-                ("user",
-                 "Дескрипторы:\n{descriptors}\n\n"
-                 "Верни JSON со следующими полями:\n"
-                 "- solubility (low/medium/high)\n"
-                 "- toxicity (low/medium/high)\n"
-                 "- drug_likeness (low/medium/high)\n"
-                 "- comments")
-            ])
+        logp = float(desc["LogP"])
+        tpsa = float(desc["TPSA"])
+        molwt = float(desc["MolWt"])
+        hbd = int(desc["NumHDonors"])
+        hba = int(desc["NumHAcceptors"])
 
-            chain = prompt | self.llm
+        if logp < 1 and tpsa > 90:
+            solubility = "high"
+        elif logp < 3:
+            solubility = "medium"
+        else:
+            solubility = "low"
 
-            response = chain.invoke({
-                "descriptors": json.dumps(descriptors, indent=2)
-            })
+        if logp > 5 or molwt > 550:
+            toxicity = "high"
+        elif logp > 3.5:
+            toxicity = "medium"
+        else:
+            toxicity = "low"
 
-            try:
-                return json.loads(response.content)
-            except Exception:
-                return {"raw_output": response.content}
+        lipinski_violations = 0
+        lipinski_violations += int(molwt > 500)
+        lipinski_violations += int(logp > 5)
+        lipinski_violations += int(hbd > 5)
+        lipinski_violations += int(hba > 10)
 
-        return [compute_descriptors, predict_properties]
+        if lipinski_violations == 0:
+            drug_likeness = "high"
+        elif lipinski_violations <= 2:
+            drug_likeness = "medium"
+        else:
+            drug_likeness = "low"
 
-    def _build_agent(self):
-        prompt = ChatPromptTemplate.from_messages([
-            ("system",
-             "Ты агент для анализа молекул. "
-             "Сначала вычисляешь дескрипторы, затем прогнозируешь свойства."),
-            ("user", "{input}"),
-            ("placeholder", "{agent_scratchpad}")
-        ])
-
-        agent = create_openai_functions_agent(
-            llm=self.llm,
-            tools=self.tools,
-            prompt=prompt
-        )
-
-        return AgentExecutor(agent=agent, tools=self.tools, verbose=True)
+        return {
+            "solubility": solubility,
+            "toxicity": toxicity,
+            "drug_likeness": drug_likeness,
+            "comments": (
+                "Heuristic estimate based on RDKit descriptors and Lipinski-style rules."
+            ),
+            "lipinski_violations": lipinski_violations,
+        }
 
     def run(self, smiles: str) -> Dict[str, Any]:
-        """
-        Запуск агента на входном SMILES.
-        """
-        input_query = f"SMILES: {smiles}"
-        result = self.agent.invoke({"input": input_query})
-        return result
+        smiles = (smiles or "").strip()
+        if not smiles:
+            return {"error": "Empty input. Please provide a SMILES string."}
+
+        descriptors = self.compute_descriptors(smiles)
+        prediction = self._predict_from_descriptors(descriptors)
+
+        return {
+            "input": smiles,
+            "descriptors": descriptors,
+            "prediction": prediction,
+        }
+
+    def as_node(self):
+        def node(state: dict) -> dict:
+            smiles = state.get("target_molecule", "")
+            result = self.run(smiles)
+            state["properties"] = result
+            state.setdefault("history", []).append(
+                {"agent": "properties_agent", "input": smiles, "output": result}
+            )
+            return state
+
+        return node
 
 
 if __name__ == "__main__":
-    from langchain_openai import ChatOpenAI
-
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-
-    agent = StructurePropertiesAgent(llm)
-
+    agent = StructurePropertiesAgent()
     result = agent.run("CCO")
-    print(result)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
