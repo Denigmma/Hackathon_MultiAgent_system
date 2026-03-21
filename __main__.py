@@ -3,10 +3,10 @@
 ...
 from loguru import logger
 from dotenv import load_dotenv
-load_dotenv()
-# from app.Agents.Orchestrator.agent_orchestrator import app
-from app.MAS.orchestrator.main import main_cli
 
+load_dotenv()
+
+from app.MAS.orchestrator.agent_orchestrator import app
 
 if __name__ == "__main__":
     try:
@@ -21,7 +21,7 @@ if __name__ == "__main__":
             "properties": {},
         }
 
-        result = app.invoke(initial_state) # type: ignore
+        result = app.invoke(initial_state)  # type: ignore
 
         print("\n--- ИТОГОВЫЙ ОТЧЕТ ИСТОРИИ ---")
         for event in result["history"]:

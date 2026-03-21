@@ -9,7 +9,6 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 
-
 MODEL_AGENT = str(os.getenv("MODEL_AGENT"))
 
 
@@ -26,10 +25,10 @@ class SeparationMethodsAgent:
     """
 
     def __init__(
-            self,
-            model: str = MODEL_AGENT,
-            temperature: float = 0.0,
-            system_prompt: Optional[str] = None,
+        self,
+        model: str = MODEL_AGENT,
+        temperature: float = 0.0,
+        system_prompt: Optional[str] = None,
     ) -> None:
         self.model = init_chat_model(model, temperature=temperature)
         self.system_prompt = system_prompt or (
@@ -98,18 +97,28 @@ class SeparationMethodsAgent:
 
         try:
             data = json.loads(text)
-            return data if isinstance(data, dict) else {"error": "LLM returned non-dict JSON", "raw": data}
+            return (
+                data
+                if isinstance(data, dict)
+                else {"error": "LLM returned non-dict JSON", "raw": data}
+            )
         except Exception:
             m = re.search(r"\{.*\}", text, flags=re.DOTALL)
             if m:
                 try:
                     data = json.loads(m.group(0))
-                    return data if isinstance(data, dict) else {"error": "LLM returned non-dict JSON", "raw": data}
+                    return (
+                        data
+                        if isinstance(data, dict)
+                        else {"error": "LLM returned non-dict JSON", "raw": data}
+                    )
                 except Exception:
                     pass
             return {"error": "Invalid JSON from LLM", "raw": text}
 
-    def run(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def run(
+        self, task: str, context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """
         Основной метод.
 
@@ -122,7 +131,9 @@ class SeparationMethodsAgent:
         """
         prompt = task.strip()
         if context:
-            prompt += "\n\nКонтекст:\n" + json.dumps(context, ensure_ascii=False, indent=2)
+            prompt += "\n\nКонтекст:\n" + json.dumps(
+                context, ensure_ascii=False, indent=2
+            )
 
         state = self.agent.invoke(
             {

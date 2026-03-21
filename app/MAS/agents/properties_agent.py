@@ -126,8 +126,10 @@ class StructurePropertiesAgent:
             "NumAliphaticRings": rdMolDescriptors.CalcNumAliphaticRings(mol),
             "FractionCSP3": rdMolDescriptors.CalcFractionCSP3(mol),
             "LabuteASA": rdMolDescriptors.CalcLabuteASA(mol),
-            "Chi0": rdMolDescriptors.CalcChi0(mol),
-            "Chi1": rdMolDescriptors.CalcChi1(mol),
+            # В некоторых сборках RDKit нет rdMolDescriptors.CalcChi0/CalcChi1,
+            # поэтому используем стабильные аналоги из Descriptors.
+            "Chi0": Descriptors.Chi0(mol),
+            "Chi1": Descriptors.Chi1(mol),
             "Kappa1": rdMolDescriptors.CalcKappa1(mol),
             "Kappa2": rdMolDescriptors.CalcKappa2(mol),
             "Kappa3": rdMolDescriptors.CalcKappa3(mol),

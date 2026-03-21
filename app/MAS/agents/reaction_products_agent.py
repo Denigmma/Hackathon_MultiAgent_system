@@ -18,10 +18,10 @@ class MixtureReactionAgent:
     """
 
     def __init__(
-            self,
-            model: str = "openai:gpt-5.2",
-            temperature: float = 0.0,
-            max_substances: int = 20,
+        self,
+        model: str = "openai:gpt-5.2",
+        temperature: float = 0.0,
+        max_substances: int = 20,
     ):
         self.max_substances = max_substances
         self.model = init_chat_model(model, temperature=temperature)
@@ -41,7 +41,14 @@ class MixtureReactionAgent:
 
     @staticmethod
     def _norm(x: Any) -> str:
-        return str(x or "").strip().lower().replace(" ", "").replace("-", "").replace("·", ".")
+        return (
+            str(x or "")
+            .strip()
+            .lower()
+            .replace(" ", "")
+            .replace("-", "")
+            .replace("·", ".")
+        )
 
     @staticmethod
     def _to_dict(obj: Any) -> Dict[str, Any]:
@@ -80,7 +87,9 @@ class MixtureReactionAgent:
             try:
                 payload = json.loads(payload_json)
             except Exception:
-                return json.dumps({"error": "Invalid JSON payload."}, ensure_ascii=False)
+                return json.dumps(
+                    {"error": "Invalid JSON payload."}, ensure_ascii=False
+                )
 
             substances = payload.get("substances", [])
             items = []
@@ -102,10 +111,14 @@ class MixtureReactionAgent:
                 total_mass += mass
 
             if total_mass <= 0:
-                return json.dumps({"total_mass_g": 0.0, "items": []}, ensure_ascii=False)
+                return json.dumps(
+                    {"total_mass_g": 0.0, "items": []}, ensure_ascii=False
+                )
 
             for item in items:
-                item["mass_fraction_percent"] = round(item["mass_g"] / total_mass * 100, 3)
+                item["mass_fraction_percent"] = round(
+                    item["mass_g"] / total_mass * 100, 3
+                )
 
             return json.dumps(
                 {"total_mass_g": round(total_mass, 6), "items": items},
@@ -126,7 +139,9 @@ class MixtureReactionAgent:
             try:
                 payload = json.loads(payload_json)
             except Exception:
-                return json.dumps({"error": "Invalid JSON payload."}, ensure_ascii=False)
+                return json.dumps(
+                    {"error": "Invalid JSON payload."}, ensure_ascii=False
+                )
 
             substances = [agent_self._to_dict(s) for s in payload.get("substances", [])]
             names = {agent_self._norm(s.get("name")) for s in substances}
@@ -153,8 +168,22 @@ class MixtureReactionAgent:
             matches: List[Dict[str, Any]] = []
 
             if (names & acids) and (names & bases):
-                acid = next((s["name"] for s in substances if agent_self._norm(s.get("name")) in acids), "acid")
-                base = next((s["name"] for s in substances if agent_self._norm(s.get("name")) in bases), "base")
+                acid = next(
+                    (
+                        s["name"]
+                        for s in substances
+                        if agent_self._norm(s.get("name")) in acids
+                    ),
+                    "acid",
+                )
+                base = next(
+                    (
+                        s["name"]
+                        for s in substances
+                        if agent_self._norm(s.get("name")) in bases
+                    ),
+                    "base",
+                )
                 matches.append(
                     {
                         "type": "acid_base",
@@ -168,9 +197,22 @@ class MixtureReactionAgent:
                 )
 
             if (names & acids) and (names & carbonates):
-                acid = next((s["name"] for s in substances if agent_self._norm(s.get("name")) in acids), "acid")
-                carbonate = next((s["name"] for s in substances if agent_self._norm(s.get("name")) in carbonates),
-                                 "carbonate")
+                acid = next(
+                    (
+                        s["name"]
+                        for s in substances
+                        if agent_self._norm(s.get("name")) in acids
+                    ),
+                    "acid",
+                )
+                carbonate = next(
+                    (
+                        s["name"]
+                        for s in substances
+                        if agent_self._norm(s.get("name")) in carbonates
+                    ),
+                    "carbonate",
+                )
                 matches.append(
                     {
                         "type": "acid_carbonate",
@@ -178,15 +220,33 @@ class MixtureReactionAgent:
                         "confidence": 0.92,
                         "summary": "Кислота и карбонат/гидрокарбонат: вероятно выделение CO2.",
                         "equation": f"{carbonate} + {acid} -> salt + H2O + CO2",
-                        "products": [{"name": "salt + water + carbon dioxide", "confidence": 0.92}],
+                        "products": [
+                            {
+                                "name": "salt + water + carbon dioxide",
+                                "confidence": 0.92,
+                            }
+                        ],
                         "warnings": ["Возможное газовыделение."],
                     }
                 )
 
             if (names & bases) and (names & ammoniums):
-                base = next((s["name"] for s in substances if agent_self._norm(s.get("name")) in bases), "base")
-                ammonium = next((s["name"] for s in substances if agent_self._norm(s.get("name")) in ammoniums),
-                                "ammonium salt")
+                base = next(
+                    (
+                        s["name"]
+                        for s in substances
+                        if agent_self._norm(s.get("name")) in bases
+                    ),
+                    "base",
+                )
+                ammonium = next(
+                    (
+                        s["name"]
+                        for s in substances
+                        if agent_self._norm(s.get("name")) in ammoniums
+                    ),
+                    "ammonium salt",
+                )
                 matches.append(
                     {
                         "type": "ammonium_base",
@@ -194,7 +254,9 @@ class MixtureReactionAgent:
                         "confidence": 0.9,
                         "summary": "Аммонийная соль и щёлочь: вероятно выделение аммиака.",
                         "equation": f"{ammonium} + {base} -> NH3 + H2O + salt",
-                        "products": [{"name": "ammonia + water + salt", "confidence": 0.9}],
+                        "products": [
+                            {"name": "ammonia + water + salt", "confidence": 0.9}
+                        ],
                         "warnings": ["Возможное выделение аммиака."],
                     }
                 )
@@ -209,7 +271,12 @@ class MixtureReactionAgent:
                             "confidence": 0.88,
                             "summary": "Вероятно образование осадка.",
                             "equation": f"{a} + {b} -> {precipitate}↓ + byproducts",
-                            "products": [{"name": f"precipitate: {precipitate}", "confidence": 0.88}],
+                            "products": [
+                                {
+                                    "name": f"precipitate: {precipitate}",
+                                    "confidence": 0.88,
+                                }
+                            ],
                             "warnings": ["Возможное образование осадка."],
                         }
                     )
@@ -218,15 +285,18 @@ class MixtureReactionAgent:
             return json.dumps(
                 {
                     "matches": matches,
-                    "best_match": max(matches, key=lambda x: x.get("confidence", 0.0), default=None),
+                    "best_match": max(
+                        matches, key=lambda x: x.get("confidence", 0.0), default=None
+                    ),
                 },
                 ensure_ascii=False,
             )
 
         return [mass_fractions, chemistry_rules]
 
-    def _validate_inputs(self, substances: List[Dict[str, Any]], conditions: Optional[Dict[str, Any]]) -> Optional[
-        Dict[str, Any]]:
+    def _validate_inputs(
+        self, substances: List[Dict[str, Any]], conditions: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
         if not substances:
             return {"error": "Список веществ не должен быть пустым."}
 
@@ -304,10 +374,10 @@ class MixtureReactionAgent:
         return {"total_mass_g": round(total_mass, 6), "items": items}
 
     def run(
-            self,
-            substances: List[Union[Dict[str, Any], Any]],
-            conditions: Optional[Union[Dict[str, Any], Any]] = None,
-            context: Optional[str] = None,
+        self,
+        substances: List[Union[Dict[str, Any], Any]],
+        conditions: Optional[Union[Dict[str, Any], Any]] = None,
+        context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Основной метод анализа смеси.
@@ -342,8 +412,12 @@ class MixtureReactionAgent:
         if not isinstance(final_json, dict):
             final_json = {"error": "Unexpected agent output.", "raw": final_json}
 
-        if "mixture_composition" not in final_json or not final_json.get("mixture_composition"):
-            final_json["mixture_composition"] = self._mass_fractions_local(substances_dict)
+        if "mixture_composition" not in final_json or not final_json.get(
+            "mixture_composition"
+        ):
+            final_json["mixture_composition"] = self._mass_fractions_local(
+                substances_dict
+            )
 
         return {
             "input": payload,
