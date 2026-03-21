@@ -10,8 +10,6 @@ from langchain.tools import tool
 
 from app.NeuralSearch.main import main as neural_search_main
 
-# from app.RAG.main import main as rag_main
-
 MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano")
 MODEL_PROVIDER_AGENT = os.getenv("MODEL_PROVIDER_AGENT", "openai")
 VSEGPT_API_KEY = os.getenv("VSEGPT_API_KEY", "")
@@ -34,7 +32,6 @@ class SeparationMethodsAgent:
         self.agent = create_agent(
             model=self.model,
             tools=[
-                # self._rag_tool(),
                 self._neural_tool(),
                 self._eval_tool(),
             ],
@@ -60,17 +57,6 @@ class SeparationMethodsAgent:
             ),
         )
 
-    # def _rag_tool(self):
-    #     @tool("rag_search")
-    #     def rag_search(query: str) -> str:
-    #         """Поиск по локальной RAG системе"""
-    #         try:
-    #             return str(rag_main(query))
-    #         except Exception as e:
-    #             return f"RAG_ERROR: {e}"
-    #
-    #     return rag_search
-
     def _neural_tool(self):
         @tool("neural_search")
         def neural_search(query: str) -> str:
@@ -93,24 +79,42 @@ class SeparationMethodsAgent:
 
         return evaluate_expression
 
-    def run(self, task: str) -> Dict[str, Any]:
+    @staticmethod
+    def _extract_output(state: Any) -> str:
+        """Унифицированное извлечение текста ответа агента."""
+        if isinstance(state, str):
+            return state
+
+        if isinstance(state, dict):
+            if "output" in state:
+                return str(state["output"])
+            if "messages" in state and state["messages"]:
+                last = state["messages"][-1]
+                return getattr(last, "content", str(last))
+
+        return str(state)
+
+    def run(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        prompt = task.strip()
+
+        if context:
+            prompt += "\n\nКонтекст:\n" + json.dumps(context, ensure_ascii=False, indent=2)
+
         state = self.agent.invoke(
-            {"messages": [{"role": "user", "content": task}]}
+            {"messages": [{"role": "user", "content": prompt}]}
         )
 
-        # максимально простой парсинг
+        text = self._extract_output(state)
+
         try:
-            text = state["output"] if isinstance(state, dict) else str(state)
             return json.loads(text)
         except Exception:
             return {
                 "error": "invalid_json",
-                "raw": str(state)
+                "raw": text,
             }
 
     def as_tool(self):
-        """Возвращает агент как LangChain tool."""
-
         agent_self = self
 
         @tool("separation_methods")
@@ -120,12 +124,11 @@ class SeparationMethodsAgent:
         return separation_methods
 
     def as_node(self):
-        """Возвращает callable-узел для LangGraph."""
-
         agent_self = self
 
         def node(state: Dict[str, Any]) -> Dict[str, Any]:
             task = state.get("task") or state.get("separation_task") or ""
+
             if not isinstance(task, str):
                 task = json.dumps(task, ensure_ascii=False)
 
