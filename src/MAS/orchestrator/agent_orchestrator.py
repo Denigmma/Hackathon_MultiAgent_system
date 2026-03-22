@@ -5,7 +5,7 @@ import operator
 import os
 import re
 from time import perf_counter
-from typing import Annotated, Any, Callable, Dict, List, TypedDict
+from typing import Annotated, Any, Callable, Dict, List, Set, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from loguru import logger
@@ -121,15 +121,6 @@ def _extract_smiles_from_text(text: str) -> str:
         return Chem.MolToSmiles(mol, canonical=True)
 
     return ""
-
-
-def _safe_copy_agent_interactions(value: Any) -> Dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    try:
-        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
-    except Exception:
-        return dict(value)
 
 
 def _normalize_state(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -281,6 +272,15 @@ def _pick_next_available_worker(
     return "FINISH"
 
 
+def _safe_copy_agent_interactions(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        return dict(value)
+
+
 def _merge_agent_interactions(base: Dict[str, Any] | None, patch: Dict[str, Any] | None) -> Dict[str, Any]:
     merged = _safe_copy_agent_interactions(base)
     if not isinstance(patch, dict):
@@ -311,22 +311,17 @@ def _build_worker_interaction_snapshot(
             "synthesis_protocol_task": state_before.get("synthesis_protocol_task"),
             "literature_query": state_before.get("literature_query"),
         },
-        "result_key": result_key,
+        "output": result_payload,
         "history_event": last_event,
     }
 
     if isinstance(result_payload, dict):
         for key in [
-            "query",
-            "backend",
-            "answer",
-            "sources",
-            "confidence",
-            "limitations",
-            "prediction",
+            "interaction_trace",
+            "agent_meta",
             "best_route",
             "ranking",
-            "protocols",
+            "sources",
             "warnings",
             "summary",
         ]:
@@ -342,14 +337,14 @@ def _build_supervisor_system_prompt() -> str:
 Твоя роль:
 - Координировать работу worker-агентов.
 - На каждом шаге выбирать РОВНО один следующий узел: worker-агент или FINISH.
+- Давать пользователю понятный итог в поле user_message.
 - Если worker-агенты не нужны, завершать задачу прямым полезным ответом через FINISH.
-- Не использовать worker-агентов без необходимости.
 
 Главная цель:
 - Дать максимально полный и профессиональный результат по запросу пользователя.
-- Сначала оценить, можно ли ответить самостоятельно, не вызывая worker-агентов.
-- Вызывать worker-агентов только тогда, когда они реально добавляют ценность.
+- Использовать worker-агентов только тогда, когда они действительно нужны.
 - Не вызывать одного и того же агента повторно для одной и той же задачи.
+- Не запрашивать лишние данные, если можно ответить по существу без них.
 
 Доступные узлы:
 {allowed_nodes}
@@ -366,33 +361,20 @@ Worker-агенты и условия готовности:
   либо выбрать наиболее практичный маршрут синтеза.
 
 3) LiteratureRAGAgent
-- Выбирай только тогда, когда действительно нужен retrieval по литературе, источникам, статьям, обзорам, патентам,
-  внутреннему индексу или базе знаний.
-- Не используй LiteratureRAGAgent как дефолтный маршрут для любых общих химических вопросов.
-- Если вопрос общий теоретический, образовательный, объяснительный или справочный и ты можешь ответить сам без retrieval,
-  выбери FINISH и дай полезный прямой ответ.
+- Выбирай для справочных, литературных, фактологических и retrieval-задач.
+- Используй его, когда нужен ответ по источникам, по статьям, обзорам, патентам или внутреннему индексу.
 
-Политика маршрутизации:
-- Сначала определи, можно ли качественно ответить напрямую без worker-агентов.
-- Для общих теоретических, объяснительных и образовательных вопросов по химии предпочитай прямой ответ через FINISH.
-- Для анализа молекулы по SMILES предпочитай StructureAnalyzer.
-- Для синтетических протоколов и выбора маршрута предпочитай SynthesisProtocolSearchAgent.
-- Для retrieval/литературных задач предпочитай LiteratureRAGAgent.
-- Если агент уже вызывался или был недоступен, не выбирай его повторно.
-- Если данных действительно недостаточно, выбери FINISH и перечисли только недостающие данные.
-
-Формат ответа:
-- Верни только валидный JSON-объект.
-- Без markdown, без комментариев, без текста вокруг JSON.
-- Ровно два поля:
+Правила:
+- Если пользователь просит именно анализ по SMILES, предпочитай StructureAnalyzer.
+- Если пользователь просит методики синтеза, протоколы или лучший маршрут — предпочитай SynthesisProtocolSearchAgent.
+- Если вопрос справочный или литературный — предпочитай LiteratureRAGAgent.
+- Не выбирай агента, если он уже вызывался или был недоступен.
+- Если данных действительно недостаточно — выбери FINISH и перечисли недостающие данные.
+- Верни только валидный JSON:
 {{
   "next_node": "<ИМЯ_УЗЛА_ИЛИ_FINISH>",
   "user_message": "<краткий профессиональный текст для пользователя>"
 }}
-
-Правила для user_message:
-- Если next_node != FINISH: коротко опиши, какой следующий шаг выполняется.
-- Если next_node == FINISH: дай прямой ответ по существу или сжатый итог по результатам history.
 """
 
 
@@ -496,12 +478,11 @@ def _looks_like_literature_task(state: TeamState) -> bool:
             "источник",
             "doi",
             "патент",
+            "что известно",
             "что пишут",
-            "по данным",
+            "данные",
             "rag",
             "paper",
-            "article",
-            "review",
         ]
     )
 
@@ -542,15 +523,19 @@ def _heuristic_supervisor_decision(state: TeamState) -> tuple[str, str, str]:
     if history:
         last_worker = _extract_latest_worker_event(history)
         if last_worker is not None:
-            return "FINISH", _format_worker_summary(last_worker), "heuristic_finish_after_any_worker"
+            return "FINISH", _format_worker_summary(last_worker), "heuristic_finish_after_last_worker"
 
-    if state.get("target_molecule") and "StructureAnalyzer" in AVAILABLE_AGENTS and "StructureAnalyzer" not in called and "StructureAnalyzer" not in failed:
+    task = str(state.get("task") or "").strip()
+    if not task:
+        return "FINISH", "Пустой запрос: уточните задачу.", "heuristic_empty_task"
+
+    if state.get("target_molecule"):
         return "StructureAnalyzer", "Анализирую структуру и свойства молекулы по SMILES.", "heuristic_default_structure"
 
     return (
         "FINISH",
-        "Оркестратор не видит необходимости вызывать специализированный инструмент по текущему запросу. Уточните, нужен ли анализ по SMILES, поиск маршрутов синтеза или литературный поиск.",
-        "heuristic_direct_finish",
+        "Уточните задачу: для анализа структуры нужен SMILES, для синтеза — целевой продукт или описание реакции, для литературного поиска — сам вопрос.",
+        "heuristic_insufficient_data",
     )
 
 
