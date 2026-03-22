@@ -1,0 +1,94 @@
+{
+  "chunking": {
+    "chunk_overlap": 50,
+    "chunk_size": 300,
+    "tokenizer_model": "gpt-4o"
+  },
+  "documents": {
+    "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_1_Traven_V_F": {
+      "meta": {
+        "doc_id": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_1_Traven_V_F",
+        "pdf_path": "/kaggle/input/datasets/denismuradyan/chemistrypdfs/Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_1_Traven_V_F.pdf",
+        "source_file": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_1_Traven_V_F.pdf",
+        "title": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_1_Traven_V_F"
+      },
+      "stats": {
+        "avg_chunk_tokens": 259.57615894039736,
+        "doc_id": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_1_Traven_V_F",
+        "max_chunk_tokens": 302,
+        "num_chunks": 1057,
+        "num_empty_pages": 0,
+        "num_pages": 399,
+        "num_sections": 74
+      }
+    },
+    "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_2_Traven_V_F": {
+      "meta": {
+        "doc_id": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_2_Traven_V_F",
+        "pdf_path": "/kaggle/input/datasets/denismuradyan/chemistrypdfs/Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_2_Traven_V_F.pdf",
+        "source_file": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_2_Traven_V_F.pdf",
+        "title": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_2_Traven_V_F"
+      },
+      "stats": {
+        "avg_chunk_tokens": 258.25752508361205,
+        "doc_id": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_2_Traven_V_F",
+        "max_chunk_tokens": 302,
+        "num_chunks": 1495,
+        "num_empty_pages": 0,
+        "num_pages": 548,
+        "num_sections": 105
+      }
+    },
+    "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_3_Traven_V_F": {
+      "meta": {
+        "doc_id": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_3_Traven_V_F",
+        "pdf_path": "/kaggle/input/datasets/denismuradyan/chemistrypdfs/Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_3_Traven_V_F.pdf",
+        "source_file": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_3_Traven_V_F.pdf",
+        "title": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_3_Traven_V_F"
+      },
+      "stats": {
+        "avg_chunk_tokens": 255.34251101321587,
+        "doc_id": "Organicheskaya_khimia_uchebnoe_posobie_dlya_vuzov_T_3_Traven_V_F",
+        "max_chunk_tokens": 302,
+        "num_chunks": 908,
+        "num_empty_pages": 0,
+        "num_pages": 389,
+        "num_sections": 70
+      }
+    },
+    "______": {
+      "meta": {
+        "doc_id": "______",
+        "pdf_path": "/kaggle/input/datasets/denismuradyan/chemistrypdfs/______.pdf",
+        "source_file": "______.pdf",
+        "title": "______"
+      },
+      "stats": {
+        "avg_chunk_tokens": 246.31057268722466,
+        "doc_id": "______",
+        "max_chunk_tokens": 302,
+        "num_chunks": 454,
+        "num_empty_pages": 0,
+        "num_pages": 317,
+        "num_sections": 17
+      }
+    }
+  },
+  "embeddings": {
+    "dim": 1024,
+    "model": "BAAI/bge-m3",
+    "normalized": true
+  },
+  "indices": {
+    "chunks_index": "vector_dbs/chunks.faiss",
+    "metric": "inner_product",
+    "sections_index": "vector_dbs/sections.faiss"
+  },
+  "page_base": 1,
+  "pipeline_version": "bge-m3_v1",
+  "sections": {
+    "fallback_max_pages": 8,
+    "fallback_overlap_pages": 2,
+    "summary_model": "stepfun/step-3.5-flash:free"
+  }
+}
