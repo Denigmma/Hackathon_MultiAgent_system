@@ -10,7 +10,6 @@ python /Users/mikhailgrudinin/Desktop/hackaton/Hackathon_MultiAgent_system/testi
 --------------------+-----------+----------+----------
 Correctness (0-10)  | 10.000000 | 9.714286 | +0.285714
 Overall (0-10)      | 8.285714  | 8.142857 | +0.142857
-Overall (0-1)       | 0.828571  | 0.814286 | +0.014285
 Completeness (0-10) | 9.785714  | 8.214286 | +1.571428
 
 """
@@ -443,8 +442,6 @@ def human_name(metric_name: str) -> str:
     mapping = {
         "llm_judge_correctness_avg_0_10": "Correctness (0-10)",
         "llm_judge_overall_avg_0_10": "Overall (0-10)",
-        "llm_judge_overall_avg_0_1": "Overall (0-1)",
-        "llm_judge_completeness_avg_0_10": "Completeness (0-10)",
         "llm_judge_faithfulness_to_reference_avg_0_10": "Faithfulness to reference (0-10)",
         "llm_judge_conciseness_avg_0_10": "Conciseness (0-10)",
     }
