@@ -15,9 +15,9 @@ PREFER_SEARCH_BACKEND = os.getenv("PREFER_SEARCH_BACKEND", "auto").lower()
 MAX_CONTEXT_PREVIEW_CHARS = int(os.getenv("LITERATURE_CONTEXT_PREVIEW_CHARS", "1500"))
 
 try:
-    from src.RAG.main import main as rag_search_main  # type: ignore
+    from src.RAG.rag_main import main as answer_query
 except Exception:
-    rag_search_main = None  # type: ignore
+    answer_query = None
 
 try:
     from src.NeuralSearch.main import main as neural_search_main  # type: ignore
@@ -64,7 +64,7 @@ class LiteratureRAGAgent:
         backend = self.prefer_backend
 
         if backend == "rag":
-            return ("rag", rag_search_main) if rag_search_main is not None else (None, None)
+            return ("rag", answer_query) if answer_query is not None else (None, None)
 
         if backend in {"neurosearch", "neural", "neuralsearch"}:
             return (
@@ -73,8 +73,8 @@ class LiteratureRAGAgent:
                 else (None, None)
             )
 
-        if rag_search_main is not None:
-            return "rag", rag_search_main
+        if answer_query is not None:
+            return "rag", answer_query
         if neural_search_main is not None:
             return "neurosearch", neural_search_main
         return None, None

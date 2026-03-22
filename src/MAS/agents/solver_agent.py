@@ -14,9 +14,9 @@ except Exception:
     neural_search_main = None  # type: ignore
 
 try:
-    from src.RAG.main import main as rag_search_main  # type: ignore
+    from src.RAG.rag_main import main as answer_query  # type: ignore
 except Exception:
-    rag_search_main = None  # type: ignore
+    answer_query = None  # type: ignore
 
 MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano")
 MODEL_PROVIDER_AGENT = os.getenv("MODEL_PROVIDER_AGENT", "openai")
@@ -137,12 +137,12 @@ class SynthesisProtocolSearchAgent:
             tools.append(neural_search)
             self.available_tools.append("neural_search")
 
-        if rag_search_main is not None:
+        if answer_query is not None:
             @tool("rag_search")
             def rag_search(query: str) -> str:
                 """Поиск по локальному RAG-корпусу: статьям, PDF, заметкам, базе методик."""
                 try:
-                    result = rag_search_main(query)
+                    result = answer_query(query)
                     if isinstance(result, (dict, list)):
                         return json.dumps(result, ensure_ascii=False)
                     return str(result)
@@ -324,7 +324,8 @@ class SynthesisProtocolSearchAgent:
                 yield_score = 4.0
 
             confidence_bonus = {"high": 1.5, "medium": 0.8, "low": 0.2}.get(confidence, 0.0)
-            score = yield_score + confidence_bonus + cls._condition_bonus(protocol) - cls._route_complexity_penalty(protocol)
+            score = yield_score + confidence_bonus + cls._condition_bonus(protocol) - cls._route_complexity_penalty(
+                protocol)
             scored.append((score, protocol))
 
         scored.sort(key=lambda item: item[0], reverse=True)
@@ -416,7 +417,8 @@ class SynthesisProtocolSearchAgent:
                 "url": source.get("url"),
             },
             "reaction": {
-                "starting_materials": reaction.get("starting_materials") if isinstance(reaction.get("starting_materials"), list) else [],
+                "starting_materials": reaction.get("starting_materials") if isinstance(
+                    reaction.get("starting_materials"), list) else [],
                 "reagents": reaction.get("reagents") if isinstance(reaction.get("reagents"), list) else [],
                 "catalysts": reaction.get("catalysts") if isinstance(reaction.get("catalysts"), list) else [],
                 "solvents": reaction.get("solvents") if isinstance(reaction.get("solvents"), list) else [],
@@ -446,9 +448,11 @@ class SynthesisProtocolSearchAgent:
         normalized_summary = {
             "route_count_found": int(summary.get("route_count_found", route_count) or route_count),
             "returned_route_count": int(summary.get("returned_route_count", route_count) or route_count),
-            "minimum_target_route_count": int(summary.get("minimum_target_route_count", MIN_ROUTE_TARGET) or MIN_ROUTE_TARGET),
+            "minimum_target_route_count": int(
+                summary.get("minimum_target_route_count", MIN_ROUTE_TARGET) or MIN_ROUTE_TARGET),
             "enough_routes_found": bool(summary.get("enough_routes_found", route_count >= MIN_ROUTE_TARGET)),
-            "key_differences": summary.get("key_differences") if isinstance(summary.get("key_differences"), list) else [],
+            "key_differences": summary.get("key_differences") if isinstance(summary.get("key_differences"),
+                                                                            list) else [],
             "coverage_note": summary.get("coverage_note") or None,
         }
 
@@ -568,12 +572,12 @@ class SynthesisProtocolSearchAgent:
 
         def node(state: Dict[str, Any]) -> Dict[str, Any]:
             task = (
-                state.get("synthesis_protocol_task")
-                or state.get("synthesis_task")
-                or state.get("protocol_search_task")
-                or state.get("reaction_task")
-                or state.get("task")
-                or ""
+                    state.get("synthesis_protocol_task")
+                    or state.get("synthesis_task")
+                    or state.get("protocol_search_task")
+                    or state.get("reaction_task")
+                    or state.get("task")
+                    or ""
             )
 
             if not isinstance(task, str):
