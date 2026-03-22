@@ -1,3 +1,4 @@
-from .decomposition_products_agent import SeparationMethodsAgent
+from .methodologies_agent import SynthesisProtocolSearchAgent
 from .properties_agent import StructurePropertiesAgent
-from .reaction_products_agent import MixtureReactionAgent
+from .solver_agent import SynthesisProtocolSearchAgent
+from .literature_rag_agent import LiteratureRAGAgent
