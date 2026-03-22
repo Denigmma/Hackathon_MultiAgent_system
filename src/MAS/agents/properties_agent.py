@@ -8,7 +8,34 @@ from langchain.tools import tool
 from rdkit import Chem
 from rdkit.Chem import Crippen, Descriptors, Lipinski, rdMolDescriptors
 
+import re
+from rdkit import Chem
+
 SMILES_CANDIDATE_RE = re.compile(r"[A-Za-z0-9@+\-\[\]\(\)=#$\\/%.]+")
+REACTION_SYMBOLS_RE = re.compile(r"(->|→|⇄|=)")
+FORMULA_LIKE_RE = re.compile(r"^\d*[A-Z][a-z]?\d*(?:[A-Z][a-z]?\d*)*$")
+
+
+def _looks_like_smiles(token: str) -> bool:
+    token = token.strip(".,;:!?\"'")
+
+    if not token:
+        return False
+
+    # Явные куски уравнений не трогаем
+    if token in {"+", "->", "→", "=", "⇄"}:
+        return False
+
+    # Обычные химические формулы вида H2O, CO2, CH4, 2H2O и т.п. пропускаем
+    if FORMULA_LIKE_RE.fullmatch(token):
+        return False
+
+    # Для SMILES обычно характерны спецсимволы/строчные атомы/скобки
+    has_smiles_markers = any(ch in token for ch in "[]=#()/\\@") or any(ch in token for ch in "cnops")
+    if not has_smiles_markers:
+        return False
+
+    return True
 
 
 class StructurePropertiesAgent:
@@ -29,9 +56,13 @@ class StructurePropertiesAgent:
         if not text:
             return ""
 
+        # Если это похоже на уравнение реакции, лучше вообще не искать SMILES
+        if REACTION_SYMBOLS_RE.search(text):
+            return ""
+
         for token in SMILES_CANDIDATE_RE.findall(text):
             candidate = token.strip(".,;:!?\"'")
-            if not candidate:
+            if not _looks_like_smiles(candidate):
                 continue
 
             mol = Chem.MolFromSmiles(candidate)
