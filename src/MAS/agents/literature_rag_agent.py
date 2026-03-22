@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Callable, Dict, Optional
 
 from langchain.chat_models import init_chat_model
 
@@ -12,68 +12,40 @@ VSEGPT_API_KEY = os.getenv("VSEGPT_API_KEY", "")
 BASE_URL = os.getenv("URL", "https://api.vsegpt.ru/v1")
 AGENT_TIMEOUT_SECONDS = float(os.getenv("AGENT_TIMEOUT_SECONDS", "60"))
 PREFER_SEARCH_BACKEND = os.getenv("PREFER_SEARCH_BACKEND", "auto").lower()
-
-# --------------------------------------------------------------------
-# ВАЖНО:
-# Ниже предполагается, что retrieval уже реализован у тебя в проекте.
-# Ты писал, что "RAG/NeuroSearch уже реализованы и импортированы в этом файле".
-#
-# Поэтому здесь оставлен блок импорта с ПРИМЕРНЫМИ именами.
-# Подставь реальные функции проекта:
-# - rag_search(query: str) -> str
-# - neuro_search(query: str) -> str
-#
-# Если у тебя есть только одна функция, оставь только её.
-# --------------------------------------------------------------------
-try:
-    from src.retrieval.rag import rag_search  # type: ignore
-except Exception:
-    rag_search = None  # type: ignore
+MAX_CONTEXT_PREVIEW_CHARS = int(os.getenv("LITERATURE_CONTEXT_PREVIEW_CHARS", "1500"))
 
 try:
-    from src.retrieval.neuro_search import neuro_search  # type: ignore
+    from src.RAG.main import main as rag_search_main  # type: ignore
 except Exception:
-    neuro_search = None  # type: ignore
+    rag_search_main = None  # type: ignore
+
+try:
+    from src.NeuralSearch.main import main as neural_search_main  # type: ignore
+except Exception:
+    neural_search_main = None  # type: ignore
 
 
 class LiteratureRAGAgent:
-    """
-    Агент для поиска и ответа по литературе / справочным источникам.
-
-    Задачи агента:
-    - взять запрос из state["literature_query"] или state["task"];
-    - вызвать retrieval (RAG / NeuroSearch);
-    - получить строковый контекст;
-    - на основе контекста сформировать итоговый grounded-ответ;
-    - вернуть результат в history и literature_result.
-
-    Ожидаемые входы из state:
-    - literature_query: str (приоритетный поисковый запрос)
-    - task: str (fallback, если literature_query не задан)
-
-    Возвращаемые поля:
-    - history: список из одного нового события агента
-    - literature_result: словарь с answer / context / query / backend
-    """
+    """Агент ответа по литературе и retrieval-источникам."""
 
     def __init__(
-            self,
-            model: str = MODEL_AGENT,
-            temperature: float = 0.0,
-            prefer_backend: str = PREFER_SEARCH_BACKEND,
+        self,
+        model: str = MODEL_AGENT,
+        temperature: float = 0.0,
+        prefer_backend: str = PREFER_SEARCH_BACKEND,
     ) -> None:
-        if not VSEGPT_API_KEY:
-            raise ValueError("VSEGPT_API_KEY не задан в окружении.")
+        self.prefer_backend = (prefer_backend or "auto").lower()
+        self.model = None
 
-        self.model = init_chat_model(
-            model=model,
-            model_provider=MODEL_PROVIDER_AGENT,
-            api_key=VSEGPT_API_KEY,
-            base_url=BASE_URL,
-            temperature=temperature,
-            timeout=AGENT_TIMEOUT_SECONDS,
-        )
-        self.prefer_backend = prefer_backend
+        if VSEGPT_API_KEY:
+            self.model = init_chat_model(
+                model=model,
+                model_provider=MODEL_PROVIDER_AGENT,
+                api_key=VSEGPT_API_KEY,
+                base_url=BASE_URL,
+                temperature=temperature,
+                timeout=AGENT_TIMEOUT_SECONDS,
+            )
 
     def _pick_query(self, state: Dict[str, Any]) -> str:
         query = str(state.get("literature_query") or "").strip()
@@ -85,57 +57,74 @@ class LiteratureRAGAgent:
             return query
 
         raise ValueError(
-            "Для LiteratureRAGAgent не найден текст запроса: "
-            "ожидается `literature_query` или `task`."
+            "Для LiteratureRAGAgent не найден текст запроса: ожидается `literature_query` или `task`."
         )
 
-    def _pick_backend_callable(self) -> tuple[str, Callable[[str], str]]:
-        """
-        Выбирает retrieval backend.
-
-        Логика:
-        - if prefer_backend == "rag" -> rag_search
-        - if prefer_backend == "neurosearch" -> neuro_search
-        - if prefer_backend == "auto" -> сначала rag_search, потом neuro_search
-        """
+    def _pick_backend_callable(self) -> tuple[Optional[str], Optional[Callable[[str], Any]]]:
         backend = self.prefer_backend
 
         if backend == "rag":
-            if rag_search is None:
-                raise ValueError("prefer_backend=rag, но функция rag_search недоступна.")
-            return "rag", rag_search
+            return ("rag", rag_search_main) if rag_search_main is not None else (None, None)
 
-        if backend == "neurosearch":
-            if neuro_search is None:
-                raise ValueError(
-                    "prefer_backend=neurosearch, но функция neuro_search недоступна."
-                )
-            return "neurosearch", neuro_search
+        if backend in {"neurosearch", "neural", "neuralsearch"}:
+            return (
+                ("neurosearch", neural_search_main)
+                if neural_search_main is not None
+                else (None, None)
+            )
 
-        # auto
-        if rag_search is not None:
-            return "rag", rag_search
-        if neuro_search is not None:
-            return "neurosearch", neuro_search
+        if rag_search_main is not None:
+            return "rag", rag_search_main
+        if neural_search_main is not None:
+            return "neurosearch", neural_search_main
+        return None, None
 
-        raise ValueError(
-            "Не найден retrieval backend: ни rag_search, ни neuro_search недоступны."
-        )
+    @staticmethod
+    def _normalize_context(raw_context: Any) -> str:
+        if raw_context is None:
+            return ""
+        if isinstance(raw_context, str):
+            return raw_context.strip()
+        try:
+            return json.dumps(raw_context, ensure_ascii=False, indent=2, default=str).strip()
+        except Exception:
+            return str(raw_context).strip()
 
     def _retrieve_context(self, query: str) -> Dict[str, Any]:
         backend_name, backend_callable = self._pick_backend_callable()
-        raw_context = backend_callable(query)
+        if backend_callable is None:
+            return {
+                "backend": None,
+                "query": query,
+                "context": "",
+                "error": "Не найден доступный retrieval backend.",
+            }
 
-        if raw_context is None:
-            raw_context = ""
-
-        context = str(raw_context).strip()
+        try:
+            raw_context = backend_callable(query)
+        except Exception as exc:
+            return {
+                "backend": backend_name,
+                "query": query,
+                "context": "",
+                "error": f"Ошибка retrieval backend: {exc}",
+            }
 
         return {
             "backend": backend_name,
             "query": query,
-            "context": context,
+            "context": self._normalize_context(raw_context),
+            "error": "",
         }
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        text = (text or "").strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 3 and lines[-1].strip().startswith("```"):
+                return "\n".join(lines[1:-1]).strip()
+        return text
 
     def _build_system_prompt(self) -> str:
         return """Ты — scientific literature assistant для химического мультиагентного пайплайна.
@@ -158,12 +147,6 @@ class LiteratureRAGAgent:
   "limitations": "<краткое описание ограничений или пустая строка>",
   "prediction": "<краткая ключевая формулировка результата>"
 }
-
-Правила:
-- Поле answer должно быть полезным и завершённым.
-- Если retrieval-контекст пустой или почти пустой, отрази это в answer и limitations.
-- Если источники не выделены структурированно, верни пустой список в sources.
-- prediction должен быть короткой выжимкой answer в 1 предложении.
 """
 
     def _build_user_prompt(self, query: str, context: str) -> str:
@@ -173,26 +156,18 @@ class LiteratureRAGAgent:
         )
 
     def _parse_llm_json(self, raw: Any) -> Dict[str, Any]:
-        """
-        Пытается извлечь dict из ответа модели.
-        Поддерживает частый формат VseGPTWrapper/LLM:
-        - dict
-        - {'data': {...}}
-        - строка JSON
-        """
         if isinstance(raw, dict):
             payload = raw.get("data", raw)
             if isinstance(payload, dict):
                 return payload
 
-        if isinstance(raw, str):
-            raw = raw.strip()
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                pass
+        text = self._strip_code_fences(str(raw))
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
 
         return {
             "answer": "Не удалось корректно распарсить ответ literature-агента.",
@@ -203,19 +178,29 @@ class LiteratureRAGAgent:
         }
 
     def _generate_answer(self, query: str, context: str) -> Dict[str, Any]:
-        """
-        Формирует grounded-ответ на основе retrieval-контекста.
-        """
-        system_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(query, context)
+        if self.model is None:
+            preview = context[:MAX_CONTEXT_PREVIEW_CHARS]
+            limitations = (
+                "LLM недоступна, поэтому возвращён упрощённый ответ по retrieval-контексту."
+            )
+            answer = (
+                "Найден retrieval-контекст по запросу. Ниже приведён фрагмент контекста для ручной интерпретации: "
+                f"{preview}"
+            )
+            return {
+                "answer": answer,
+                "sources": [],
+                "confidence": "low",
+                "limitations": limitations,
+                "prediction": "Найден контекст, но LLM-суммаризация недоступна.",
+            }
 
         response = self.model.invoke(
             [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "system", "content": self._build_system_prompt()},
+                {"role": "user", "content": self._build_user_prompt(query, context)},
             ]
         )
-
         content = getattr(response, "content", response)
         parsed = self._parse_llm_json(content)
 
@@ -223,20 +208,12 @@ class LiteratureRAGAgent:
         prediction = str(parsed.get("prediction", "")).strip()
         confidence = str(parsed.get("confidence", "low")).strip() or "low"
         limitations = str(parsed.get("limitations", "")).strip()
-
         sources = parsed.get("sources", [])
         if not isinstance(sources, list):
             sources = []
 
         if not answer:
-            if context:
-                answer = (
-                    "Контекст по запросу найден, но финальный ответ не удалось "
-                    "сформировать в структурированном виде."
-                )
-            else:
-                answer = "По запросу не найден релевантный retrieval-контекст."
-
+            answer = "Контекст найден, но финальный ответ не удалось сформировать в структурированном виде."
         if not prediction:
             prediction = answer
 
@@ -248,31 +225,27 @@ class LiteratureRAGAgent:
             "prediction": prediction,
         }
 
-    def _build_empty_result(self, query: str) -> Dict[str, Any]:
+    def _build_empty_result(self, query: str, backend: Optional[str], error: str) -> Dict[str, Any]:
         return {
             "query": query,
-            "backend": None,
+            "backend": backend,
             "context": "",
-            "answer": (
-                "Не удалось получить retrieval-контекст по запросу. "
-                "Проверьте подключение RAG/NeuroSearch."
-            ),
+            "answer": "Не удалось получить retrieval-контекст по запросу.",
             "sources": [],
             "confidence": "low",
-            "limitations": "Retrieval backend не вернул контекст.",
+            "limitations": error or "Retrieval backend не вернул контекст.",
             "prediction": "Не удалось получить retrieval-контекст.",
         }
 
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         query = self._pick_query(state)
-
         retrieval_data = self._retrieve_context(query)
-        context = retrieval_data["context"]
-        backend = retrieval_data["backend"]
+        context = retrieval_data.get("context", "")
+        backend = retrieval_data.get("backend")
+        error = str(retrieval_data.get("error") or "")
 
         if not context:
-            result = self._build_empty_result(query)
-            result["backend"] = backend
+            result = self._build_empty_result(query, backend, error)
         else:
             llm_result = self._generate_answer(query, context)
             result = {

@@ -8,47 +8,50 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 
-from src.NeuralSearch.main import main as neural_search_main
-# from src.RAG.main import main as rag_search_main
+try:
+    from src.NeuralSearch.main import main as neural_search_main  # type: ignore
+except Exception:
+    neural_search_main = None  # type: ignore
+
+try:
+    from src.RAG.main import main as rag_search_main  # type: ignore
+except Exception:
+    rag_search_main = None  # type: ignore
 
 MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano")
 MODEL_PROVIDER_AGENT = os.getenv("MODEL_PROVIDER_AGENT", "openai")
 VSEGPT_API_KEY = os.getenv("VSEGPT_API_KEY", "")
 BASE_URL = os.getenv("URL", "https://api.vsegpt.ru/v1")
+AGENT_TIMEOUT_SECONDS = float(os.getenv("AGENT_TIMEOUT_SECONDS", "60"))
+MIN_ROUTE_TARGET = int(os.getenv("MIN_SYNTHESIS_ROUTE_TARGET", "3"))
 
 
 class SynthesisProtocolSearchAgent:
-    """
-    Агент для поиска, структурирования и выбора лучшего маршрута синтеза.
-
-    Что делает:
-    1. Ищет различные методики / маршруты синтеза.
-    2. Возвращает по возможности >= 3 различных маршрута.
-    3. Сохраняет структуру взаимодействия с агентом и инструментами.
-    4. На втором шаге выбирает лучший маршрут по мнению модели
-       (не только корректный, но и наиболее удобный / практичный).
-    """
+    """Агент для поиска, структурирования и выбора лучшего маршрута синтеза."""
 
     def __init__(self, temperature: float = 0.1):
-        if not VSEGPT_API_KEY:
-            raise ValueError("VSEGPT_API_KEY не задан")
+        self.temperature = temperature
+        self.model = None
+        self.search_agent = None
+        self.available_tools: List[str] = []
 
-        self.model = init_chat_model(
-            MODEL_AGENT,
-            model_provider=MODEL_PROVIDER_AGENT,
-            temperature=temperature,
-            api_key=VSEGPT_API_KEY,
-            base_url=BASE_URL,
-        )
+        if VSEGPT_API_KEY:
+            self.model = init_chat_model(
+                MODEL_AGENT,
+                model_provider=MODEL_PROVIDER_AGENT,
+                temperature=temperature,
+                api_key=VSEGPT_API_KEY,
+                base_url=BASE_URL,
+                timeout=AGENT_TIMEOUT_SECONDS,
+            )
 
-        self.search_agent = create_agent(
-            model=self.model,
-            tools=[
-                self._neural_tool(),
-                self._rag_tool(),
-            ],
-            system_prompt=self._build_search_system_prompt(),
-        )
+        tools = self._build_tools()
+        if self.model is not None and tools:
+            self.search_agent = create_agent(
+                model=self.model,
+                tools=tools,
+                system_prompt=self._build_search_system_prompt(),
+            )
 
     @staticmethod
     def _build_search_system_prompt() -> str:
@@ -61,14 +64,10 @@ class SynthesisProtocolSearchAgent:
             "4. Если найдено меньше 3 методик, возвращать все найденные.\n"
             "5. Не выдумывать статьи, DOI, выходы, условия или реагенты.\n"
             "6. Возвращать только валидный JSON без markdown и без текста вне JSON.\n\n"
-
             "Определение различия методик:\n"
             "- Считай методики различными, если различаются ключевые реагенты, тип превращения, "
             "порядок стадий, катализатор, условия реакции или синтетический маршрут.\n"
             "- Не дублируй почти идентичные варианты как отдельные маршруты.\n\n"
-
-            "Если информация не найдена, ставь null, пустой список или указывай это в notes/warnings.\n\n"
-
             "Формат ответа:\n"
             "{"
             '"target": {'
@@ -117,43 +116,52 @@ class SynthesisProtocolSearchAgent:
             '"coverage_note": string | null'
             "}, "
             '"warnings": [string]'
-            "}\n\n"
-
-            "Правила:\n"
-            "- Стремись вернуть как минимум 3 различных маршрута/методики, если они доступны.\n"
-            "- Если найдено меньше 3, верни все найденные.\n"
-            "- Не выбирай лучший протокол на этом шаге.\n"
-            "- summary.key_differences должен описывать различия между маршрутами.\n"
-            "- Всегда возвращай только JSON."
+            "}"
         )
 
-    def _neural_tool(self):
-        @tool("neural_search")
-        def neural_search(query: str) -> str:
-            """Широкий поиск по статьям, базам и индексам для поиска методик синтеза."""
-            try:
-                result = neural_search_main(query)
-                if isinstance(result, (dict, list)):
-                    return json.dumps(result, ensure_ascii=False)
-                return str(result)
-            except Exception as e:
-                return f"NEURAL_ERROR: {e}"
+    def _build_tools(self):
+        tools = []
 
-        return neural_search
+        if neural_search_main is not None:
+            @tool("neural_search")
+            def neural_search(query: str) -> str:
+                """Широкий поиск по статьям, базам и индексам для поиска методик синтеза."""
+                try:
+                    result = neural_search_main(query)
+                    if isinstance(result, (dict, list)):
+                        return json.dumps(result, ensure_ascii=False)
+                    return str(result)
+                except Exception as exc:  # pragma: no cover - external dependency
+                    return f"NEURAL_ERROR: {exc}"
 
-    # def _rag_tool(self):
-    #     @tool("rag_search")
-    #     def rag_search(query: str) -> str:
-    #         """Поиск по локальному RAG-корпусу: статьям, PDF, заметкам, базе методик."""
-    #         try:
-    #             result = rag_search_main(query)
-    #             if isinstance(result, (dict, list)):
-    #                 return json.dumps(result, ensure_ascii=False)
-    #             return str(result)
-    #         except Exception as e:
-    #             return f"RAG_ERROR: {e}"
-    #
-    #     return rag_search
+            tools.append(neural_search)
+            self.available_tools.append("neural_search")
+
+        if rag_search_main is not None:
+            @tool("rag_search")
+            def rag_search(query: str) -> str:
+                """Поиск по локальному RAG-корпусу: статьям, PDF, заметкам, базе методик."""
+                try:
+                    result = rag_search_main(query)
+                    if isinstance(result, (dict, list)):
+                        return json.dumps(result, ensure_ascii=False)
+                    return str(result)
+                except Exception as exc:  # pragma: no cover - external dependency
+                    return f"RAG_ERROR: {exc}"
+
+            tools.append(rag_search)
+            self.available_tools.append("rag_search")
+
+        return tools
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        text = (text or "").strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 3 and lines[-1].strip().startswith("```"):
+                return "\n".join(lines[1:-1]).strip()
+        return text
 
     @staticmethod
     def _extract_output(state: Any) -> str:
@@ -163,16 +171,30 @@ class SynthesisProtocolSearchAgent:
         if isinstance(state, dict):
             if "output" in state:
                 return str(state["output"])
-            if "messages" in state and state["messages"]:
-                last = state["messages"][-1]
-                return getattr(last, "content", str(last))
+            messages = state.get("messages") or []
+            if messages:
+                last = messages[-1]
+                content = getattr(last, "content", last)
+                if isinstance(content, list):
+                    parts = []
+                    for block in content:
+                        if isinstance(block, dict) and "text" in block:
+                            parts.append(str(block["text"]))
+                        else:
+                            parts.append(str(block))
+                    return "".join(parts)
+                return str(content)
 
+        if hasattr(state, "content"):
+            return str(getattr(state, "content"))
         return str(state)
 
     @staticmethod
     def _safe_json_loads(text: str) -> Optional[Dict[str, Any]]:
+        text = SynthesisProtocolSearchAgent._strip_code_fences(text)
         try:
-            return json.loads(text)
+            value = json.loads(text)
+            return value if isinstance(value, dict) else None
         except Exception:
             return None
 
@@ -182,27 +204,22 @@ class SynthesisProtocolSearchAgent:
             "type": msg.__class__.__name__,
             "content": getattr(msg, "content", None),
         }
-
         additional_kwargs = getattr(msg, "additional_kwargs", None)
         if additional_kwargs:
             data["additional_kwargs"] = additional_kwargs
-
         name = getattr(msg, "name", None)
         if name:
             data["name"] = name
-
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
             data["tool_calls"] = tool_calls
-
         response_metadata = getattr(msg, "response_metadata", None)
         if response_metadata:
             data["response_metadata"] = response_metadata
-
         return data
 
     def _extract_interaction_trace(self, state: Any) -> List[Dict[str, Any]]:
-        if isinstance(state, dict) and "messages" in state and isinstance(state["messages"], list):
+        if isinstance(state, dict) and isinstance(state.get("messages"), list):
             return [self._serialize_message(m) for m in state["messages"]]
         return []
 
@@ -215,149 +232,235 @@ class SynthesisProtocolSearchAgent:
             "1. Найти различные методики/маршруты синтеза.\n"
             "2. Извлечь условия реакции: исходные вещества, реагенты, катализаторы, растворители, температуру, время, атмосферу.\n"
             "3. Извлечь результат: выход, селективность, масштаб.\n"
-            "4. Вернуть не менее 3 различных маршрутов, если они существуют.\n"
-            "5. Если найдено меньше 3, вернуть все найденные.\n"
+            f"4. Вернуть не менее {MIN_ROUTE_TARGET} различных маршрутов, если они существуют.\n"
+            "5. Если найдено меньше, вернуть все найденные.\n"
             "6. Не выбирать лучший маршрут на этом шаге.\n"
             "7. Вернуть только JSON заданного формата.\n"
         )
 
         if context:
-            prompt += "\nКонтекст:\n" + json.dumps(context, ensure_ascii=False, indent=2)
-
+            prompt += "\nКонтекст:\n" + json.dumps(context, ensure_ascii=False, indent=2, default=str)
         return prompt
 
     @staticmethod
     def _build_selector_prompt(search_result: Dict[str, Any]) -> str:
         return (
-                "Ты химический эксперт по выбору наиболее практичного маршрута синтеза.\n"
-                "Тебе дан список найденных маршрутов синтеза. "
-                "Выбери лучший маршрут не только по химической корректности, но и по общей практичности/удобству.\n\n"
-
-                "Критерии выбора:\n"
-                "1. Простота маршрута и операционная удобность.\n"
-                "2. Меньшее число сложных стадий / меньше синтетической сложности.\n"
-                "3. Более мягкие и реалистичные условия.\n"
-                "4. Более доступные реагенты/катализаторы/растворители.\n"
-                "5. Более высокий выход, если он указан.\n"
-                "6. Более простой workup / purification.\n"
-                "7. Лучшая масштабируемость.\n"
-                "8. Более высокая надежность и практическая воспроизводимость.\n\n"
-
-                "Если данных недостаточно, всё равно выбери лучший из доступных вариантов и явно укажи ограничения.\n"
-                "Не выдумывай факты. Опирайся только на переданные маршруты.\n"
-                "Верни только валидный JSON без markdown.\n\n"
-
-                "Формат ответа:\n"
-                "{"
-                '"best_route": {'
-                '"route_id": string | null, '
-                '"reasoning": [string], '
-                '"strengths": [string], '
-                '"weaknesses": [string], '
-                '"practicality_score": number | null, '
-                '"confidence": string'
-                "}, "
-                '"ranking": ['
-                "{"
-                '"route_id": string, '
-                '"rank": number, '
-                '"score": number | null, '
-                '"why": [string]'
-                "}"
-                "], "
-                '"selection_warnings": [string]'
-                "}\n\n"
-
-                "Данные для анализа:\n"
-                + json.dumps(search_result, ensure_ascii=False, indent=2)
+            "Ты химический эксперт по выбору наиболее практичного маршрута синтеза.\n"
+            "Тебе дан список найденных маршрутов синтеза. Выбери лучший маршрут не только по химической корректности, но и по общей практичности/удобству.\n\n"
+            "Критерии выбора:\n"
+            "1. Простота маршрута и операционная удобность.\n"
+            "2. Меньшее число сложных стадий и меньшая синтетическая сложность.\n"
+            "3. Более мягкие и реалистичные условия.\n"
+            "4. Более доступные реагенты, катализаторы и растворители.\n"
+            "5. Более высокий выход, если он указан.\n"
+            "6. Более простой workup и purification.\n"
+            "7. Лучшая масштабируемость.\n"
+            "8. Более высокая надежность и практическая воспроизводимость.\n\n"
+            "Если данных недостаточно, всё равно выбери лучший из доступных вариантов и явно укажи ограничения.\n"
+            "Не выдумывай факты. Опирайся только на переданные маршруты.\n"
+            "Верни только валидный JSON без markdown.\n\n"
+            "Формат ответа:\n"
+            "{"
+            '"best_route": {'
+            '"route_id": string | null, '
+            '"reasoning": [string], '
+            '"strengths": [string], '
+            '"weaknesses": [string], '
+            '"practicality_score": number | null, '
+            '"confidence": string'
+            "}, "
+            '"ranking": ['
+            "{"
+            '"route_id": string, '
+            '"rank": number, '
+            '"score": number | null, '
+            '"comment": string'
+            "}"
+            "]"
+            "}\n\n"
+            f"Маршруты:\n{json.dumps(search_result.get('protocols', []), ensure_ascii=False, indent=2, default=str)}"
         )
 
-    def _select_best_protocol(self, parsed_result: Dict[str, Any]) -> Dict[str, Any]:
-        protocols = parsed_result.get("protocols", [])
-        if not protocols:
+    @staticmethod
+    def _route_complexity_penalty(protocol: Dict[str, Any]) -> float:
+        reaction = protocol.get("reaction", {}) or {}
+        starting = len(reaction.get("starting_materials", []) or [])
+        reagents = len(reaction.get("reagents", []) or [])
+        catalysts = len(reaction.get("catalysts", []) or [])
+        purification = len(reaction.get("purification", []) or [])
+        workup = len(reaction.get("workup", []) or [])
+        return 0.8 * starting + 0.5 * reagents + 0.3 * catalysts + 0.4 * purification + 0.2 * workup
+
+    @staticmethod
+    def _condition_bonus(protocol: Dict[str, Any]) -> float:
+        reaction = protocol.get("reaction", {}) or {}
+        temp = str(reaction.get("temperature") or "").lower()
+        atmosphere = str(reaction.get("atmosphere") or "").lower()
+        score = 0.0
+        if temp:
+            if any(token in temp for token in ["room", "rt", "25", "20"]):
+                score += 1.0
+            if any(token in temp for token in ["reflux", "120", "150", "180"]):
+                score -= 0.8
+        if atmosphere:
+            if atmosphere in {"air", "ambient", "open air"}:
+                score += 0.5
+            if any(token in atmosphere for token in ["argon", "nitrogen", "inert"]):
+                score -= 0.3
+        return score
+
+    @classmethod
+    def _heuristic_rank_protocols(cls, protocols: List[Dict[str, Any]]) -> Dict[str, Any]:
+        ranking: List[Dict[str, Any]] = []
+        scored: List[tuple[float, Dict[str, Any]]] = []
+
+        for protocol in protocols:
+            outcome = protocol.get("outcome", {}) or {}
+            confidence = str(protocol.get("confidence") or "").lower()
+            yield_percent = outcome.get("yield_percent")
+            try:
+                yield_score = float(yield_percent) / 10.0 if yield_percent is not None else 4.0
+            except Exception:
+                yield_score = 4.0
+
+            confidence_bonus = {"high": 1.5, "medium": 0.8, "low": 0.2}.get(confidence, 0.0)
+            score = yield_score + confidence_bonus + cls._condition_bonus(protocol) - cls._route_complexity_penalty(protocol)
+            scored.append((score, protocol))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        for idx, (score, protocol) in enumerate(scored, start=1):
+            ranking.append(
+                {
+                    "route_id": protocol.get("route_id") or f"route_{idx}",
+                    "rank": idx,
+                    "score": round(score, 3),
+                    "comment": "Эвристический ранг по выходу, простоте и мягкости условий.",
+                }
+            )
+
+        if not scored:
             return {
                 "best_route": {
                     "route_id": None,
-                    "reasoning": [],
+                    "reasoning": ["Не удалось выделить ни одного маршрута для ранжирования."],
                     "strengths": [],
-                    "weaknesses": ["Не найдено ни одного маршрута для сравнения."],
+                    "weaknesses": ["Маршруты отсутствуют."],
                     "practicality_score": None,
                     "confidence": "low",
                 },
                 "ranking": [],
-                "selection_warnings": ["Невозможно выбрать лучший маршрут: protocols пуст."]
             }
 
-        prompt = self._build_selector_prompt(parsed_result)
-        response = self.model.invoke(prompt)
+        best_score, best_protocol = scored[0]
+        best_route = {
+            "route_id": best_protocol.get("route_id"),
+            "reasoning": [
+                "Маршрут выбран по эвристической оценке практичности.",
+                "Учитывались выход, сложность набора реагентов и жёсткость условий.",
+            ],
+            "strengths": [
+                f"Эвристический score={round(best_score, 3)}",
+                "Маршрут занимает верхнюю позицию в ранжировании.",
+            ],
+            "weaknesses": [
+                "Ранжирование получено без дополнительной LLM-оценки.",
+            ],
+            "practicality_score": round(best_score, 3),
+            "confidence": "medium" if len(scored) > 1 else "low",
+        }
+        return {"best_route": best_route, "ranking": ranking}
 
-        text = getattr(response, "content", str(response))
-        parsed = self._safe_json_loads(text)
+    def _select_best_protocol(self, parsed_result: Dict[str, Any]) -> Dict[str, Any]:
+        protocols = parsed_result.get("protocols", [])
+        if not isinstance(protocols, list):
+            protocols = []
 
-        if parsed is not None:
-            return parsed
+        if not protocols:
+            return self._heuristic_rank_protocols([])
 
-        # fallback: простой эвристический выбор, если второй LLM-ответ сломан
-        best_route_id = None
-        best_score = -10 ** 9
-        ranking = []
+        if self.model is None:
+            return self._heuristic_rank_protocols(protocols)
 
-        for idx, p in enumerate(protocols, start=1):
-            score = 0.0
-
-            outcome = p.get("outcome", {}) or {}
-            reaction = p.get("reaction", {}) or {}
-
-            y = outcome.get("yield_percent")
-            if isinstance(y, (int, float)):
-                score += float(y)
-
-            catalysts = reaction.get("catalysts") or []
-            purification = reaction.get("purification") or []
-            reagents = reaction.get("reagents") or []
-
-            score -= 5 * max(0, len(catalysts) - 1)
-            score -= 2 * max(0, len(purification) - 1)
-            score -= 0.5 * len(reagents)
-
-            temp = reaction.get("temperature")
-            if isinstance(temp, str):
-                low_temp_markers = ["room", "rt", "25", "20", "ambient", "комнат"]
-                if any(m in temp.lower() for m in low_temp_markers):
-                    score += 5
-
-            if score > best_score:
-                best_score = score
-                best_route_id = p.get("route_id")
-
-            ranking.append(
-                {
-                    "route_id": p.get("route_id", f"route_{idx}"),
-                    "rank": 0,
-                    "score": round(score, 2),
-                    "why": ["Fallback-оценка по выходу, простоте и мягкости условий."]
-                }
+        try:
+            response = self.model.invoke(
+                [
+                    {"role": "system", "content": "Верни только JSON без markdown."},
+                    {"role": "user", "content": self._build_selector_prompt(parsed_result)},
+                ]
             )
+            content = getattr(response, "content", response)
+            parsed = self._safe_json_loads(str(content))
+            if isinstance(parsed, dict) and "best_route" in parsed and "ranking" in parsed:
+                return parsed
+        except Exception:
+            pass
 
-        ranking = sorted(ranking, key=lambda x: (x["score"] is None, -(x["score"] or -999999)))
-        for rank_idx, item in enumerate(ranking, start=1):
-            item["rank"] = rank_idx
+        return self._heuristic_rank_protocols(protocols)
+
+    @staticmethod
+    def _normalize_protocol(protocol: Dict[str, Any], index: int) -> Dict[str, Any]:
+        protocol = protocol if isinstance(protocol, dict) else {}
+        source = protocol.get("source") if isinstance(protocol.get("source"), dict) else {}
+        reaction = protocol.get("reaction") if isinstance(protocol.get("reaction"), dict) else {}
+        outcome = protocol.get("outcome") if isinstance(protocol.get("outcome"), dict) else {}
+        return {
+            "route_id": protocol.get("route_id") or f"route_{index}",
+            "route_type": protocol.get("route_type") or "unspecified",
+            "source": {
+                "title": source.get("title") or "",
+                "authors": source.get("authors") if isinstance(source.get("authors"), list) else [],
+                "year": source.get("year"),
+                "journal": source.get("journal"),
+                "doi": source.get("doi"),
+                "url": source.get("url"),
+            },
+            "reaction": {
+                "starting_materials": reaction.get("starting_materials") if isinstance(reaction.get("starting_materials"), list) else [],
+                "reagents": reaction.get("reagents") if isinstance(reaction.get("reagents"), list) else [],
+                "catalysts": reaction.get("catalysts") if isinstance(reaction.get("catalysts"), list) else [],
+                "solvents": reaction.get("solvents") if isinstance(reaction.get("solvents"), list) else [],
+                "temperature": reaction.get("temperature"),
+                "time": reaction.get("time"),
+                "atmosphere": reaction.get("atmosphere"),
+                "workup": reaction.get("workup") if isinstance(reaction.get("workup"), list) else [],
+                "purification": reaction.get("purification") if isinstance(reaction.get("purification"), list) else [],
+            },
+            "outcome": {
+                "yield_percent": outcome.get("yield_percent"),
+                "selectivity": outcome.get("selectivity"),
+                "scale": outcome.get("scale"),
+            },
+            "notes": protocol.get("notes") if isinstance(protocol.get("notes"), list) else [],
+            "confidence": protocol.get("confidence") or "low",
+        }
+
+    def _normalize_search_result(self, task: str, parsed_result: Dict[str, Any]) -> Dict[str, Any]:
+        target = parsed_result.get("target") if isinstance(parsed_result.get("target"), dict) else {}
+        raw_protocols = parsed_result.get("protocols") if isinstance(parsed_result.get("protocols"), list) else []
+        protocols = [self._normalize_protocol(protocol, i) for i, protocol in enumerate(raw_protocols, start=1)]
+        summary = parsed_result.get("summary") if isinstance(parsed_result.get("summary"), dict) else {}
+        warnings = parsed_result.get("warnings") if isinstance(parsed_result.get("warnings"), list) else []
+
+        route_count = len(protocols)
+        normalized_summary = {
+            "route_count_found": int(summary.get("route_count_found", route_count) or route_count),
+            "returned_route_count": int(summary.get("returned_route_count", route_count) or route_count),
+            "minimum_target_route_count": int(summary.get("minimum_target_route_count", MIN_ROUTE_TARGET) or MIN_ROUTE_TARGET),
+            "enough_routes_found": bool(summary.get("enough_routes_found", route_count >= MIN_ROUTE_TARGET)),
+            "key_differences": summary.get("key_differences") if isinstance(summary.get("key_differences"), list) else [],
+            "coverage_note": summary.get("coverage_note") or None,
+        }
 
         return {
-            "best_route": {
-                "route_id": best_route_id,
-                "reasoning": [
-                    "Использован fallback-режим, потому что JSON от шага выбора маршрута оказался невалидным."
-                ],
-                "strengths": ["Маршрут выбран по упрощённой практической эвристике."],
-                "weaknesses": ["Оценка менее надёжна, чем полноценный LLM ranking."],
-                "practicality_score": ranking[0]["score"] if ranking else None,
-                "confidence": "medium",
+            "target": {
+                "name": target.get("name") or "",
+                "reaction_description": target.get("reaction_description") or task,
+                "desired_product": target.get("desired_product") or "",
             },
-            "ranking": ranking,
-            "selection_warnings": [
-                "Шаг model-based ranking вернул невалидный JSON, использована fallback-эвристика."
-            ],
+            "protocols": protocols,
+            "summary": normalized_summary,
+            "warnings": warnings,
         }
 
     @staticmethod
@@ -371,18 +474,10 @@ class SynthesisProtocolSearchAgent:
                 "desired_product": "",
             },
             "protocols": [],
-            "best_route": {
-                "route_id": None,
-                "reasoning": [],
-                "strengths": [],
-                "weaknesses": ["Агент вернул невалидный JSON на этапе поиска маршрутов."],
-                "practicality_score": None,
-                "confidence": "low",
-            },
             "summary": {
                 "route_count_found": 0,
                 "returned_route_count": 0,
-                "minimum_target_route_count": 3,
+                "minimum_target_route_count": MIN_ROUTE_TARGET,
                 "enough_routes_found": False,
                 "key_differences": [],
                 "coverage_note": "Агент вернул невалидный JSON.",
@@ -392,47 +487,78 @@ class SynthesisProtocolSearchAgent:
                 "Проверь format instructions или добавь post-validation.",
             ],
             "interaction_trace": trace or [],
+            "agent_meta": {
+                "tools": [],
+                "selection_mode": "none",
+            },
         }
 
-    def run(
-            self,
-            task: str,
-            context: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    @staticmethod
+    def _build_unavailable_result(task: str, reason: str) -> Dict[str, Any]:
+        return {
+            "error": "search_unavailable",
+            "raw": "",
+            "target": {
+                "name": "",
+                "reaction_description": task,
+                "desired_product": "",
+            },
+            "protocols": [],
+            "summary": {
+                "route_count_found": 0,
+                "returned_route_count": 0,
+                "minimum_target_route_count": MIN_ROUTE_TARGET,
+                "enough_routes_found": False,
+                "key_differences": [],
+                "coverage_note": reason,
+            },
+            "warnings": [reason],
+            "interaction_trace": [],
+            "agent_meta": {
+                "tools": [],
+                "selection_mode": "none",
+            },
+        }
+
+    def run(self, task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        task = (task or "").strip()
+        if not task:
+            return self._build_unavailable_result("", "Пустой запрос для поиска методик синтеза.")
+
+        if self.search_agent is None:
+            reasons = []
+            if self.model is None:
+                reasons.append("LLM-модель не инициализирована")
+            if not self.available_tools:
+                reasons.append("не найден ни один retrieval backend")
+            return self._build_unavailable_result(task, "; ".join(reasons) or "search_agent недоступен")
+
         prompt = self._build_user_prompt(task, context=context)
-
-        state = self.search_agent.invoke(
-            {"messages": [{"role": "user", "content": prompt}]}
-        )
-
+        state = self.search_agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+        text = self._extract_output(state)
+        parsed = self._safe_json_loads(text)
         trace = self._extract_interaction_trace(state)
-        raw_text = self._extract_output(state)
-        parsed = self._safe_json_loads(raw_text)
 
         if parsed is None:
-            return self._build_invalid_json_result(task=task, raw=raw_text, trace=trace)
+            return self._build_invalid_json_result(task, text, trace=trace)
 
-        selection = self._select_best_protocol(parsed)
-
-        parsed["best_route"] = selection.get("best_route", {})
-        parsed["ranking"] = selection.get("ranking", [])
-        parsed["selection_warnings"] = selection.get("selection_warnings", [])
-
-        # сохраняем структуру взаимодействия
-        parsed["interaction_trace"] = trace
-        parsed["agent_meta"] = {
-            "task": task,
-            "context": context,
-            "raw_output": raw_text,
+        normalized = self._normalize_search_result(task, parsed)
+        selection = self._select_best_protocol(normalized)
+        normalized["best_route"] = selection.get("best_route")
+        normalized["ranking"] = selection.get("ranking", [])
+        normalized["interaction_trace"] = trace
+        normalized["agent_meta"] = {
+            "tools": list(self.available_tools),
+            "selection_mode": "llm" if self.model is not None else "heuristic",
         }
-
-        return parsed
+        return normalized
 
     def as_tool(self):
         agent_self = self
 
         @tool("synthesis_protocol_search")
         def synthesis_protocol_search(task: str) -> dict:
+            """Поиск и сравнение методик синтеза."""
             return agent_self.run(task)
 
         return synthesis_protocol_search
@@ -442,30 +568,19 @@ class SynthesisProtocolSearchAgent:
 
         def node(state: Dict[str, Any]) -> Dict[str, Any]:
             task = (
-                    state.get("task")
-                    or state.get("synthesis_task")
-                    or state.get("protocol_search_task")
-                    or state.get("reaction_task")
-                    or ""
+                state.get("synthesis_protocol_task")
+                or state.get("synthesis_task")
+                or state.get("protocol_search_task")
+                or state.get("reaction_task")
+                or state.get("task")
+                or ""
             )
 
             if not isinstance(task, str):
-                task = json.dumps(task, ensure_ascii=False)
+                task = json.dumps(task, ensure_ascii=False, default=str)
 
             result = agent_self.run(task, context=state.get("context"))
-
             state["synthesis_protocol_result"] = result
-
-            # сохраняем отдельную структуру взаимодействия
-            state.setdefault("agent_interactions", {})
-            state["agent_interactions"]["SynthesisProtocolSearchAgent"] = {
-                "input": task,
-                "context": state.get("context"),
-                "interaction_trace": result.get("interaction_trace", []),
-                "best_route": result.get("best_route"),
-                "ranking": result.get("ranking", []),
-            }
-
             state.setdefault("history", []).append(
                 {
                     "agent": "SynthesisProtocolSearchAgent",

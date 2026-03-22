@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import operator
 import os
+import re
 from time import perf_counter
-from typing import Annotated, Any, Callable, Dict, List, TypedDict
+from typing import Annotated, Any, Callable, Dict, List, Set, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from loguru import logger
+from rdkit import Chem
 
 from src.llm_client import VseGPTConfig, VseGPTWrapper
-from src.MAS.agents.properties_agent import StructurePropertiesAgent
 from src.MAS.agents.literature_rag_agent import LiteratureRAGAgent
+from src.MAS.agents.properties_agent import StructurePropertiesAgent
 from src.MAS.agents.solver_agent import SynthesisProtocolSearchAgent
 
 API_KEY = os.getenv("VSEGPT_API_KEY", "")
@@ -21,6 +23,7 @@ MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano-thinking-xhigh")
 MAX_WORKER_STEPS = int(os.getenv("MAX_WORKER_STEPS", "8"))
 SUPERVISOR_TIMEOUT_SECONDS = float(os.getenv("SUPERVISOR_TIMEOUT_SECONDS", "45"))
 LOG_VALUE_MAX_CHARS = int(os.getenv("LOG_VALUE_MAX_CHARS", "1200"))
+SMILES_CANDIDATE_RE = re.compile(r"[A-Za-z0-9@+\-\[\]\(\)=#$\\/%.]+")
 
 ALL_WORKER_NODES = [
     "StructureAnalyzer",
@@ -33,28 +36,25 @@ KNOWN_NODES = set(ALL_WORKER_NODES + ["FINISH"])
 class TeamState(TypedDict, total=False):
     task: str
     target_molecule: str
-
     synthesis_protocol_task: str
     synthesis_protocol_result: Dict[str, Any]
-
     literature_query: str
     literature_result: Dict[str, Any]
-
     history: Annotated[List[Dict[str, Any]], operator.add]
     properties: Dict[str, Any]
     next_worker: str
-
-    # сохранение структур взаимодействий
     agent_interactions: Dict[str, Any]
     supervisor_trace: Annotated[List[Dict[str, Any]], operator.add]
 
 
-config = VseGPTConfig(
-    base_url=BASE_URL,
-    api_key=API_KEY,
-    model=MODEL_ORCHESTOR,
-)
-llm = VseGPTWrapper(config)
+llm: VseGPTWrapper | None = None
+if API_KEY:
+    config = VseGPTConfig(
+        base_url=BASE_URL,
+        api_key=API_KEY,
+        model=MODEL_ORCHESTOR,
+    )
+    llm = VseGPTWrapper(config)
 
 
 def _to_log_text(value: Any, max_chars: int = LOG_VALUE_MAX_CHARS) -> str:
@@ -79,14 +79,12 @@ def _parse_available_agents(raw_value: str) -> List[str]:
     filtered = [item for item in raw_items if item in KNOWN_NODES]
     if not filtered:
         logger.warning(
-            "AVAILABLE_AGENTS содержит только неизвестные узлы. "
-            "Использую дефолтный список."
+            "AVAILABLE_AGENTS содержит только неизвестные узлы. Использую дефолтный список."
         )
         return ALL_WORKER_NODES + ["FINISH"]
 
     if "FINISH" not in filtered:
         filtered.append("FINISH")
-
     return filtered
 
 
@@ -96,27 +94,59 @@ AVAILABLE_AGENTS = _parse_available_agents(os.getenv("AVAILABLE_AGENTS", ""))
 def _history_as_text(history: List[Dict[str, Any]]) -> str:
     if not history:
         return "История пуста (начало работы)."
-
-    lines: List[str] = []
-    for item in history:
-        lines.append(json.dumps(item, ensure_ascii=False, default=str))
-    return "\n".join(lines)
+    return "\n".join(json.dumps(item, ensure_ascii=False, default=str) for item in history)
 
 
 def _agent_interactions_as_text(agent_interactions: Dict[str, Any] | None) -> str:
     if not agent_interactions:
         return "Структуры взаимодействия с агентами пока отсутствуют."
-
     try:
         return json.dumps(agent_interactions, ensure_ascii=False, default=str)
     except Exception:
         return str(agent_interactions)
 
 
-def _extract_latest_agent_event(
-    history: List[Dict[str, Any]],
-    agent_name: str,
-) -> Dict[str, Any] | None:
+def _extract_smiles_from_text(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+
+    for token in SMILES_CANDIDATE_RE.findall(text):
+        candidate = token.strip(".,;:!?\"'")
+        if not candidate:
+            continue
+        mol = Chem.MolFromSmiles(candidate)
+        if mol is None:
+            continue
+        return Chem.MolToSmiles(mol, canonical=True)
+
+    return ""
+
+
+def _normalize_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(state)
+    task = str(normalized.get("task") or "").strip()
+
+    target_molecule = str(normalized.get("target_molecule") or "").strip()
+    if not target_molecule and task:
+        target_molecule = _extract_smiles_from_text(task)
+    if target_molecule:
+        normalized["target_molecule"] = target_molecule
+
+    if not normalized.get("synthesis_protocol_task") and task:
+        normalized["synthesis_protocol_task"] = task
+    if not normalized.get("literature_query") and task:
+        normalized["literature_query"] = task
+
+    normalized["history"] = list(normalized.get("history", []))
+    normalized["agent_interactions"] = _safe_copy_agent_interactions(
+        normalized.get("agent_interactions", {})
+    )
+    normalized["supervisor_trace"] = list(normalized.get("supervisor_trace", []))
+    return normalized
+
+
+def _extract_latest_agent_event(history: List[Dict[str, Any]], agent_name: str) -> Dict[str, Any] | None:
     for item in reversed(history):
         if str(item.get("agent")) == agent_name:
             return item
@@ -137,7 +167,6 @@ def _build_best_route_summary(best_route: Dict[str, Any] | None) -> str | None:
     route_id = best_route.get("route_id")
     confidence = best_route.get("confidence")
     score = best_route.get("practicality_score")
-
     if not route_id:
         return None
 
@@ -146,7 +175,6 @@ def _build_best_route_summary(best_route: Dict[str, Any] | None) -> str | None:
         parts.append(f"practicality_score={score}")
     if confidence:
         parts.append(f"confidence={confidence}")
-
     return ", ".join(parts)
 
 
@@ -157,15 +185,10 @@ def _format_worker_summary(event: Dict[str, Any]) -> str:
     if agent_name == "LiteratureRAGAgent" and isinstance(output, dict):
         answer = output.get("answer")
         sources = output.get("sources", [])
-
         if answer:
             if sources:
-                return (
-                    f"По результатам LiteratureRAGAgent найден ответ: {answer} "
-                    f"(источников: {len(sources)})."
-                )
+                return f"По результатам LiteratureRAGAgent найден ответ: {answer} (источников: {len(sources)})."
             return f"По результатам LiteratureRAGAgent найден ответ: {answer}"
-
         return "LiteratureRAGAgent завершил анализ, но точный ответ по источникам не найден."
 
     if agent_name == "SynthesisProtocolSearchAgent" and isinstance(output, dict):
@@ -174,53 +197,34 @@ def _format_worker_summary(event: Dict[str, Any]) -> str:
         enough_routes_found = summary.get("enough_routes_found")
         best_route = output.get("best_route", {}) or {}
         best_route_summary = _build_best_route_summary(best_route)
-
         if protocols:
             if enough_routes_found:
-                base = (
-                    f"Найдены и структурированы методики синтеза: {len(protocols)} "
-                    f"(достигнут целевой минимум маршрутов)."
-                )
+                base = f"Найдены и структурированы методики синтеза: {len(protocols)} (достигнут целевой минимум маршрутов)."
             else:
-                base = (
-                    f"Найдены и структурированы методики синтеза: {len(protocols)} "
-                    f"(возвращены все доступные найденные маршруты)."
-                )
-
-            if best_route_summary:
-                return f"{base} Дополнительно {best_route_summary}."
-            return base
-
+                base = f"Найдены и структурированы методики синтеза: {len(protocols)} (возвращены все доступные найденные маршруты)."
+            return f"{base} Дополнительно {best_route_summary}." if best_route_summary else base
         if output.get("error") == "invalid_json":
-            return (
-                "Агент поиска методик синтеза отработал, но вернул невалидный JSON; "
-                "маршруты не удалось надёжно извлечь."
-            )
-
+            return "Агент поиска методик синтеза отработал, но вернул невалидный JSON; маршруты не удалось надёжно извлечь."
+        if output.get("error") == "search_unavailable":
+            note = output.get("summary", {}).get("coverage_note")
+            return f"Агент методик синтеза недоступен: {note}" if note else "Агент методик синтеза недоступен."
         return "Агент поиска методик синтеза завершил анализ, но релевантные маршруты не найдены."
 
     if agent_name == "StructureAnalyzer" and isinstance(output, dict):
+        summary = output.get("summary")
         prediction = output.get("prediction")
+        if summary:
+            return f"Выполнен анализ структуры целевой молекулы. {summary}"
         if prediction is not None:
-            return (
-                "Выполнен анализ структуры целевой молекулы. "
-                f"Ключевой результат: {prediction}"
-            )
+            return f"Выполнен анализ структуры целевой молекулы. Ключевой результат: {prediction}"
 
     if isinstance(output, dict) and output.get("prediction") is not None:
-        return (
-            f"Получен ответ от {agent_name}. "
-            f"Ключевая часть результата (prediction): {output.get('prediction')}"
-        )
+        return f"Получен ответ от {agent_name}. Ключевая часть результата (prediction): {output.get('prediction')}"
 
     return f"Получен ответ от {agent_name}: {json.dumps(output, ensure_ascii=False, default=str)}"
 
 
-def _build_supervisor_event(
-    task: str,
-    message: str,
-    source_agent: str = "Supervisor",
-) -> Dict[str, Any]:
+def _build_supervisor_event(task: str, message: str, source_agent: str = "Supervisor") -> Dict[str, Any]:
     return {
         "agent": "Supervisor",
         "input": task,
@@ -246,11 +250,9 @@ def _failed_init_workers(history: List[Dict[str, Any]]) -> set[str]:
         agent = str(item.get("agent"))
         if agent not in ALL_WORKER_NODES:
             continue
-
         output = item.get("output")
         if isinstance(output, dict) and output.get("initialization_error"):
             failed.add(agent)
-
     return failed
 
 
@@ -261,14 +263,12 @@ def _pick_next_available_worker(
     prefer_not_called: bool = True,
 ) -> str:
     excluded = exclude or set()
-
     for node in ALL_WORKER_NODES:
         if node not in AVAILABLE_AGENTS or node in excluded or node in failed:
             continue
         if prefer_not_called and node in called:
             continue
         return node
-
     return "FINISH"
 
 
@@ -281,14 +281,10 @@ def _safe_copy_agent_interactions(value: Any) -> Dict[str, Any]:
         return dict(value)
 
 
-def _merge_agent_interactions(
-    base: Dict[str, Any] | None,
-    patch: Dict[str, Any] | None,
-) -> Dict[str, Any]:
+def _merge_agent_interactions(base: Dict[str, Any] | None, patch: Dict[str, Any] | None) -> Dict[str, Any]:
     merged = _safe_copy_agent_interactions(base)
     if not isinstance(patch, dict):
         return merged
-
     for key, value in patch.items():
         merged[key] = value
     return merged
@@ -320,21 +316,17 @@ def _build_worker_interaction_snapshot(
     }
 
     if isinstance(result_payload, dict):
-        if "interaction_trace" in result_payload:
-            snapshot["interaction_trace"] = result_payload.get("interaction_trace", [])
-        if "agent_meta" in result_payload:
-            snapshot["agent_meta"] = result_payload.get("agent_meta")
-        if "best_route" in result_payload:
-            snapshot["best_route"] = result_payload.get("best_route")
-        if "ranking" in result_payload:
-            snapshot["ranking"] = result_payload.get("ranking")
-        if "sources" in result_payload:
-            snapshot["sources"] = result_payload.get("sources")
-        if "warnings" in result_payload:
-            snapshot["warnings"] = result_payload.get("warnings")
-        if "summary" in result_payload:
-            snapshot["summary"] = result_payload.get("summary")
-
+        for key in [
+            "interaction_trace",
+            "agent_meta",
+            "best_route",
+            "ranking",
+            "sources",
+            "warnings",
+            "summary",
+        ]:
+            if key in result_payload:
+                snapshot[key] = result_payload.get(key)
     return snapshot
 
 
@@ -364,98 +356,217 @@ Worker-агенты и условия готовности:
 - Не выбирай, если `target_molecule` пуст.
 
 2) SynthesisProtocolSearchAgent
-- Выбирай, когда пользователь просит:
-  - найти методики или маршруты синтеза;
-  - подобрать литературные процедуры получения вещества;
-  - собрать несколько вариантов синтеза;
-  - сравнить условия реакций, выходы, реагенты, катализаторы, растворители;
-  - получить набор возможных синтетических путей;
-  - выбрать наиболее практичный / удобный маршрут синтеза.
-- Этот агент возвращает не менее 3 различных маршрутов/методик, если они существуют.
-- Если найдено меньше 3, он возвращает все найденные.
-- После поиска он также выбирает лучший маршрут по мнению модели
-  с учётом не только корректности, но и практичности/удобства.
-- Он сохраняет структуру взаимодействия: trace, ranking, best_route, raw/meta.
-- Используй его, когда нужен сбор и структурирование экспериментальных процедур
-  или когда нужно выбрать наиболее удобный путь среди найденных.
+- Выбирай, когда пользователь просит найти методики или маршруты синтеза, подобрать литературные процедуры получения вещества,
+  собрать несколько вариантов синтеза, сравнить условия реакций, выходы, реагенты, катализаторы, растворители,
+  либо выбрать наиболее практичный маршрут синтеза.
 
 3) LiteratureRAGAgent
-- Выбирай, когда запрос пользователя является справочным, фактологическим, литературным,
-  требует точного ответа, ссылки на источники, поиска по статьям, книгам, обзорам,
-  патентам, базам знаний или внутреннему индексу документов.
-- Используй его для вопросов в стиле:
-  "что известно о...",
-  "найди данные по литературе...",
-  "какие есть методы...",
-  "что пишут статьи...",
-  "дай точный ответ по источникам..."
-- Выбирай его также тогда, когда для ответа нужна повышенная точность и опора на retrieval,
-  даже если вопрос выглядит как общий теоретический.
-- Не выбирай его только в случае, если вопрос тривиален и не требует внешнего поиска.
+- Выбирай для справочных, литературных, фактологических и retrieval-задач.
+- Используй его, когда нужен ответ по источникам, по статьям, обзорам, патентам или внутреннему индексу.
 
-Критически важные правила:
-- Если пользователь просит именно найти протоколы синтеза, условия реакции, сравнить выходы,
-  реагенты, растворители, катализаторы или выбрать лучшую методику синтеза,
-  предпочитай SynthesisProtocolSearchAgent.
-- Если нужен общий литературный обзор, фактологическая справка, ответы по источникам,
-  но без акцента на экспериментальные протоколы, предпочитай LiteratureRAGAgent.
-- Если запрос пользователя общий теоретический, справочный, фактологический,
-  образовательный или литературный вопрос по химии, сначала проверь,
-  нужен ли retrieval через LiteratureRAGAgent.
-- Не запрашивай SMILES для общих справочных вопросов.
-- Не запрашивай лишние данные, если LiteratureRAGAgent или SynthesisProtocolSearchAgent
-  уже могут начать работу по `task`.
-
-Политика маршрутизации:
-- Сначала определи, можно ли ответить напрямую без worker-агентов.
-- Для справочных, фактологических и литературных вопросов по умолчанию предпочитай
-  LiteratureRAGAgent вместо прямого FINISH, если он доступен.
-- Для запросов о протоколах синтеза, условиях реакций, сравнении методик и выборе
-  наиболее удобного синтетического пути по умолчанию предпочитай
-  SynthesisProtocolSearchAgent, если он доступен.
-- Если можно ответить напрямую без потери точности — выбери FINISH.
-- Если нужен специализированный анализ, определи релевантных агентов.
-- Если релевантный агент еще не вызывался и входные данные достаточны — выбери его.
-- Если релевантных невызывавшихся агентов с достаточными данными не осталось — выбери FINISH.
-- Если данных действительно недостаточно для релевантного агента — выбери FINISH и кратко перечисли, чего именно не хватает.
-- Если в истории есть ошибки инициализации или выполнения агента, не выбирай этот агент повторно.
-
-Критерии FINISH:
-- Все релевантные агенты уже отработали, или
-- Нет достаточных входных данных для дальнейших релевантных вызовов, или
-- На вопрос можно качественно ответить без вызова worker-агентов, или
-- Задача уже решена по history и/или agent_interactions.
-
-Требования к формату ответа:
-- Верни только валидный JSON-объект.
-- Без markdown, без комментариев, без текста вокруг JSON.
-- Ровно два поля:
+Правила:
+- Если пользователь просит именно анализ по SMILES, предпочитай StructureAnalyzer.
+- Если пользователь просит методики синтеза, протоколы или лучший маршрут — предпочитай SynthesisProtocolSearchAgent.
+- Если вопрос справочный или литературный — предпочитай LiteratureRAGAgent.
+- Не выбирай агента, если он уже вызывался или был недоступен.
+- Если данных действительно недостаточно — выбери FINISH и перечисли недостающие данные.
+- Верни только валидный JSON:
 {{
   "next_node": "<ИМЯ_УЗЛА_ИЛИ_FINISH>",
   "user_message": "<краткий профессиональный текст для пользователя>"
 }}
-
-Требования к user_message:
-- Если next_node != FINISH: коротко (1 предложение) сообщи, какой следующий шаг выполняется.
-- Если next_node == FINISH:
-  - если вопрос общий, дай прямой ответ по существу;
-  - если были результаты history, дай сжатый профессиональный итог;
-  - если у SynthesisProtocolSearchAgent есть best_route, учти его в итоговом сообщении;
-  - если данных действительно не хватило, явно перечисли только недостающие данные.
 """
+
+
+def _strip_code_fences(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json|JSON)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _parse_jsonish_dict(value: Any) -> Dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+
+    candidates = [value, _strip_code_fences(value)]
+    for candidate in candidates:
+        candidate = (candidate or "").strip()
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if 0 <= start < end:
+            fragment = candidate[start : end + 1]
+            try:
+                parsed = json.loads(fragment)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+    return None
 
 
 def _parse_supervisor_decision(result: Any) -> tuple[str, str]:
     if not isinstance(result, dict):
         return "FINISH", ""
 
-    payload = result.get("data", result)
-    if not isinstance(payload, dict):
+    payload = _parse_jsonish_dict(result.get("data"))
+    if payload is None:
+        payload = _parse_jsonish_dict(result.get("raw_text"))
+    if payload is None:
+        payload = _parse_jsonish_dict(result)
+    if payload is None:
         return "FINISH", ""
 
-    next_node = str(payload.get("next_node", "FINISH"))
+    next_node = str(payload.get("next_node", "FINISH")).strip() or "FINISH"
     user_message = str(payload.get("user_message", "")).strip()
     return next_node, user_message
+
+
+def _task_lower(state: TeamState) -> str:
+    return str(state.get("task") or "").lower()
+
+
+def _looks_like_structure_task(state: TeamState) -> bool:
+    task = _task_lower(state)
+    return bool(state.get("target_molecule")) or any(
+        token in task
+        for token in ["smiles", "молекул", "структур", "дескриптор", "свойств", "logp", "tpsa"]
+    )
+
+
+def _looks_like_synthesis_task(state: TeamState) -> bool:
+    task = _task_lower(state)
+    return any(
+        token in task
+        for token in [
+            "синтез",
+            "маршрут",
+            "методик",
+            "протокол",
+            "услови",
+            "реагент",
+            "катализ",
+            "растворител",
+            "выход",
+            "получени",
+        ]
+    )
+
+
+def _looks_like_literature_task(state: TeamState) -> bool:
+    task = _task_lower(state)
+    return any(
+        token in task
+        for token in [
+            "литератур",
+            "стат",
+            "обзор",
+            "источник",
+            "doi",
+            "патент",
+            "что известно",
+            "что пишут",
+            "данные",
+            "rag",
+            "paper",
+        ]
+    )
+
+
+def _infer_relevant_workers(state: TeamState) -> List[str]:
+    relevant: List[str] = []
+    if _looks_like_structure_task(state) and state.get("target_molecule"):
+        relevant.append("StructureAnalyzer")
+    if _looks_like_synthesis_task(state):
+        relevant.append("SynthesisProtocolSearchAgent")
+    if _looks_like_literature_task(state):
+        relevant.append("LiteratureRAGAgent")
+    return [node for node in relevant if node in AVAILABLE_AGENTS]
+
+
+def _heuristic_supervisor_decision(state: TeamState) -> tuple[str, str, str]:
+    history = list(state.get("history", []))
+    called = _called_workers(history)
+    failed = _failed_init_workers(history)
+    relevant = [node for node in _infer_relevant_workers(state) if node not in failed]
+
+    if relevant:
+        for node in relevant:
+            if node not in called:
+                if node == "StructureAnalyzer" and not state.get("target_molecule"):
+                    continue
+                message_map = {
+                    "StructureAnalyzer": "Анализирую структуру и свойства молекулы по SMILES.",
+                    "SynthesisProtocolSearchAgent": "Ищу и структурирую маршруты синтеза, затем выберу наиболее практичный.",
+                    "LiteratureRAGAgent": "Ищу ответ по литературным и retrieval-источникам.",
+                }
+                return node, message_map.get(node, "Запускаю профильного агента."), "heuristic_route"
+
+        last_worker = _extract_latest_worker_event(history)
+        if last_worker is not None:
+            return "FINISH", _format_worker_summary(last_worker), "heuristic_finish_after_workers"
+
+    if history:
+        last_worker = _extract_latest_worker_event(history)
+        if last_worker is not None:
+            return "FINISH", _format_worker_summary(last_worker), "heuristic_finish_after_last_worker"
+
+    task = str(state.get("task") or "").strip()
+    if not task:
+        return "FINISH", "Пустой запрос: уточните задачу.", "heuristic_empty_task"
+
+    if state.get("target_molecule"):
+        return "StructureAnalyzer", "Анализирую структуру и свойства молекулы по SMILES.", "heuristic_default_structure"
+
+    return (
+        "FINISH",
+        "Уточните задачу: для анализа структуры нужен SMILES, для синтеза — целевой продукт или описание реакции, для литературного поиска — сам вопрос.",
+        "heuristic_insufficient_data",
+    )
+
+
+def _validate_or_repair_decision(
+    state: TeamState,
+    proposed_next: str,
+    user_message: str,
+    reason: str,
+) -> tuple[str, str, str]:
+    history = list(state.get("history", []))
+    called = _called_workers(history)
+    failed = _failed_init_workers(history)
+
+    next_worker = proposed_next if proposed_next in AVAILABLE_AGENTS else "FINISH"
+    if next_worker == "StructureAnalyzer" and not str(state.get("target_molecule") or "").strip():
+        return (
+            "FINISH",
+            user_message or "Для структурного анализа не удалось извлечь корректный SMILES из запроса.",
+            f"{reason}_no_smiles",
+        )
+
+    if next_worker != "FINISH" and (next_worker in called or next_worker in failed):
+        alternative = _pick_next_available_worker(called, failed, exclude={next_worker}, prefer_not_called=True)
+        if alternative == "FINISH":
+            last_worker = _extract_latest_worker_event(history)
+            if last_worker is not None:
+                return "FINISH", _format_worker_summary(last_worker), f"{reason}_already_called_finish"
+            return "FINISH", user_message or "Релевантные агенты уже были вызваны.", f"{reason}_already_called_finish"
+        return alternative, user_message, f"{reason}_rerouted"
+
+    return next_worker, user_message, reason
 
 
 def _error_node(agent_name: str, error: Exception):
@@ -492,15 +603,10 @@ def _timed_worker_node(
         started = perf_counter()
         logger.info("{}: запуск...", agent_name)
 
-        working_state: Dict[str, Any] = dict(state)
-        working_state["history"] = list(state.get("history", []))
-        working_state["agent_interactions"] = _safe_copy_agent_interactions(
-            state.get("agent_interactions", {})
-        )
-
+        working_state: Dict[str, Any] = _normalize_state(dict(state))
         try:
             updated_state = node_fn(working_state)
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover - safety net
             elapsed = perf_counter() - started
             logger.exception("{}: ошибка за {:.2f} c: {}", agent_name, elapsed, exc)
             return {
@@ -525,25 +631,16 @@ def _timed_worker_node(
         elapsed = perf_counter() - started
         history = updated_state.get("history", [])
         last_event = _extract_latest_agent_event(history, agent_name)
-
         if last_event is None:
             last_event = {
                 "agent": agent_name,
                 "output": {"error": "Worker completed without history event."},
             }
 
-        logger.info(
-            "{}: ответ за {:.2f} c: {}",
-            agent_name,
-            elapsed,
-            _to_log_text(last_event.get("output")),
-        )
+        logger.info("{}: ответ за {:.2f} c: {}", agent_name, elapsed, _to_log_text(last_event.get("output")))
 
         incoming_interactions = _safe_copy_agent_interactions(state.get("agent_interactions", {}))
-        updated_interactions = _safe_copy_agent_interactions(
-            updated_state.get("agent_interactions", {})
-        )
-
+        updated_interactions = _safe_copy_agent_interactions(updated_state.get("agent_interactions", {}))
         snapshot = _build_worker_interaction_snapshot(
             agent_name=agent_name,
             task=str(state.get("task", "")),
@@ -552,7 +649,6 @@ def _timed_worker_node(
             last_event=last_event,
             result_key=result_key,
         )
-
         merged_interactions = _merge_agent_interactions(incoming_interactions, updated_interactions)
         merged_interactions[agent_name] = snapshot
 
@@ -560,31 +656,29 @@ def _timed_worker_node(
             "history": [last_event],
             "agent_interactions": merged_interactions,
         }
-
         if result_key in updated_state:
             updates[result_key] = updated_state[result_key]
-
+        if "target_molecule" in updated_state:
+            updates["target_molecule"] = updated_state["target_molecule"]
         return updates
 
     return wrapped
 
 
-structure_agent_instance = StructurePropertiesAgent(temperature=0.01)
-structure_node_legacy = structure_agent_instance.as_node()
+try:
+    structure_agent_instance = StructurePropertiesAgent(temperature=0.01)
+    structure_node_legacy = structure_agent_instance.as_node()
+except Exception as exc:
+    structure_node_legacy = _error_node("StructureAnalyzer", exc)
 
 try:
-    synthesis_protocol_agent_instance = SynthesisProtocolSearchAgent(
-        temperature=0.01,
-    )
+    synthesis_protocol_agent_instance = SynthesisProtocolSearchAgent(temperature=0.01)
     synthesis_protocol_node_legacy = synthesis_protocol_agent_instance.as_node()
 except Exception as exc:
     synthesis_protocol_node_legacy = _error_node("SynthesisProtocolSearchAgent", exc)
 
 try:
-    literature_rag_agent_instance = LiteratureRAGAgent(
-        model=MODEL_AGENT,
-        temperature=0.0,
-    )
+    literature_rag_agent_instance = LiteratureRAGAgent(model=MODEL_AGENT, temperature=0.0)
     literature_rag_node_legacy = literature_rag_agent_instance.as_node()
 except Exception as exc:
     literature_rag_node_legacy = _error_node("LiteratureRAGAgent", exc)
@@ -592,6 +686,7 @@ except Exception as exc:
 
 def supervisor_node(state: TeamState) -> Dict[str, Any]:
     started_total = perf_counter()
+    state = _normalize_state(state)
     history = list(state.get("history", []))
     agent_interactions = _safe_copy_agent_interactions(state.get("agent_interactions", {}))
 
@@ -599,10 +694,7 @@ def supervisor_node(state: TeamState) -> Dict[str, Any]:
 
     worker_steps = sum(1 for item in history if str(item.get("agent")) in ALL_WORKER_NODES)
     if worker_steps >= MAX_WORKER_STEPS:
-        message = (
-            "Завершаю работу: достигнут лимит шагов. "
-            "Уточните входные данные, чтобы продолжить."
-        )
+        message = "Завершаю работу: достигнут лимит шагов. Уточните входные данные, чтобы продолжить."
         event = _build_supervisor_event(state.get("task", ""), message)
         logger.warning("Supervisor: достигнут лимит шагов worker ({}) -> FINISH", MAX_WORKER_STEPS)
         logger.info("Supervisor: завершил шаг за {:.2f} c", perf_counter() - started_total)
@@ -618,95 +710,43 @@ def supervisor_node(state: TeamState) -> Dict[str, Any]:
             ],
         }
 
-    system_prompt = _build_supervisor_system_prompt()
-    prompt = (
-        f"Задача: {state.get('task', '')}\n"
-        f"SMILES: {state.get('target_molecule', 'Не указан')}\n"
-        f"synthesis_protocol_task: {state.get('synthesis_protocol_task', state.get('task', ''))}\n"
-        f"literature_query: {state.get('literature_query', state.get('task', ''))}\n\n"
-        f"Текущая история:\n{_history_as_text(history)}\n\n"
-        f"Структуры взаимодействия с агентами:\n{_agent_interactions_as_text(agent_interactions)}"
-    )
-
-    started_llm = perf_counter()
-    try:
-        result = llm.ask(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            json_mode=True,
-            temperature=0.0,
-            timeout=SUPERVISOR_TIMEOUT_SECONDS,
+    if llm is None:
+        next_worker, user_message, reason = _heuristic_supervisor_decision(state)
+    else:
+        system_prompt = _build_supervisor_system_prompt()
+        prompt = (
+            f"Задача: {state.get('task', '')}\n"
+            f"SMILES: {state.get('target_molecule', 'Не указан')}\n"
+            f"synthesis_protocol_task: {state.get('synthesis_protocol_task', state.get('task', ''))}\n"
+            f"literature_query: {state.get('literature_query', state.get('task', ''))}\n\n"
+            f"Текущая история:\n{_history_as_text(history)}\n\n"
+            f"Структуры взаимодействия с агентами:\n{_agent_interactions_as_text(agent_interactions)}"
         )
-    except Exception as exc:
-        llm_elapsed = perf_counter() - started_llm
-        logger.error("Supervisor: ошибка вызова LLM за {:.2f} c: {}", llm_elapsed, exc)
 
-        called = _called_workers(history)
-        failed = _failed_init_workers(history)
-        fallback_next = "FINISH" if called else _pick_next_available_worker(called, failed)
-
-        if fallback_next == "FINISH":
-            last_worker = _extract_latest_worker_event(history)
-            if last_worker:
-                message = _format_worker_summary(last_worker)
-                event = _build_supervisor_event(
-                    state.get("task", ""),
-                    message,
-                    source_agent=str(last_worker.get("agent", "Supervisor")),
-                )
+        started_llm = perf_counter()
+        try:
+            result = llm.ask(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                json_mode=True,
+                temperature=0.0,
+                timeout=SUPERVISOR_TIMEOUT_SECONDS,
+            )
+            llm_elapsed = perf_counter() - started_llm
+            logger.info("Supervisor: ответ LLM за {:.2f} c: {}", llm_elapsed, _to_log_text(result))
+            proposed_next, user_message = _parse_supervisor_decision(result)
+            if proposed_next == "FINISH" and not user_message:
+                next_worker, user_message, reason = _heuristic_supervisor_decision(state)
+                reason = f"llm_unparsed->{reason}"
             else:
-                message = "Не удалось получить ответ от модели Supervisor. Попробуйте повторить запрос."
-                event = _build_supervisor_event(state.get("task", ""), message)
-
-            logger.info("Supervisor: завершил шаг за {:.2f} c", perf_counter() - started_total)
-            return {
-                "next_worker": "FINISH",
-                "history": [event],
-                "supervisor_trace": [
-                    {
-                        "decision": "FINISH",
-                        "reason": "supervisor_llm_error",
-                        "error": str(exc),
-                        "message": message,
-                    }
-                ],
-            }
-
-        logger.warning("Supervisor: fallback-маршрут -> {}", fallback_next)
-        logger.info("Supervisor: завершил шаг за {:.2f} c", perf_counter() - started_total)
-        return {
-            "next_worker": fallback_next,
-            "supervisor_trace": [
-                {
-                    "decision": fallback_next,
-                    "reason": "supervisor_llm_error_fallback_route",
-                    "error": str(exc),
-                }
-            ],
-        }
-
-    llm_elapsed = perf_counter() - started_llm
-    logger.info("Supervisor: ответ LLM за {:.2f} c: {}", llm_elapsed, _to_log_text(result))
-
-    next_worker, user_message = _parse_supervisor_decision(result)
-    if next_worker not in AVAILABLE_AGENTS:
-        logger.warning("Supervisor: узел '{}' отключен или неизвестен -> FINISH", next_worker)
-        next_worker = "FINISH"
-
-    called = _called_workers(history)
-    failed = _failed_init_workers(history)
-
-    if next_worker != "FINISH" and (next_worker in called or next_worker in failed):
-        logger.warning(
-            "Supervisor: агент '{}' уже вызывался или недоступен. Ищу альтернативу.",
-            next_worker,
-        )
-        next_worker = _pick_next_available_worker(
-            called,
-            failed,
-            exclude={next_worker},
-            prefer_not_called=True,
-        )
+                next_worker, user_message, reason = _validate_or_repair_decision(
+                    state, proposed_next, user_message, "llm_route"
+                )
+        except Exception as exc:
+            llm_elapsed = perf_counter() - started_llm
+            logger.error("Supervisor: ошибка вызова LLM за {:.2f} c: {}", llm_elapsed, exc)
+            next_worker, user_message, reason = _heuristic_supervisor_decision(state)
+            reason = f"supervisor_llm_error->{reason}"
 
     logger.info("Supervisor решил: передаю задачу -> {}", next_worker)
 
@@ -725,11 +765,7 @@ def supervisor_node(state: TeamState) -> Dict[str, Any]:
         else:
             source_agent = "Supervisor"
 
-        event = _build_supervisor_event(
-            state.get("task", ""),
-            user_message,
-            source_agent=source_agent,
-        )
+        event = _build_supervisor_event(state.get("task", ""), user_message, source_agent=source_agent)
         logger.info("Supervisor: завершил шаг за {:.2f} c", perf_counter() - started_total)
         return {
             "next_worker": "FINISH",
@@ -737,7 +773,7 @@ def supervisor_node(state: TeamState) -> Dict[str, Any]:
             "supervisor_trace": [
                 {
                     "decision": "FINISH",
-                    "reason": "llm_finish",
+                    "reason": reason,
                     "message": user_message,
                 }
             ],
@@ -746,10 +782,13 @@ def supervisor_node(state: TeamState) -> Dict[str, Any]:
     logger.info("Supervisor: завершил шаг за {:.2f} c", perf_counter() - started_total)
     return {
         "next_worker": next_worker,
+        "target_molecule": state.get("target_molecule", ""),
+        "synthesis_protocol_task": state.get("synthesis_protocol_task", state.get("task", "")),
+        "literature_query": state.get("literature_query", state.get("task", "")),
         "supervisor_trace": [
             {
                 "decision": next_worker,
-                "reason": "llm_route",
+                "reason": reason,
                 "message": user_message,
             }
         ],
@@ -761,7 +800,7 @@ workflow.add_node("Supervisor", supervisor_node)
 workflow.add_node(
     "StructureAnalyzer",
     _timed_worker_node("StructureAnalyzer", structure_node_legacy, "properties"),
-)  # type: ignore[arg-type]
+)
 workflow.add_node(
     "SynthesisProtocolSearchAgent",
     _timed_worker_node(
@@ -769,11 +808,11 @@ workflow.add_node(
         synthesis_protocol_node_legacy,
         "synthesis_protocol_result",
     ),
-)  # type: ignore[arg-type]
+)
 workflow.add_node(
     "LiteratureRAGAgent",
     _timed_worker_node("LiteratureRAGAgent", literature_rag_node_legacy, "literature_result"),
-)  # type: ignore[arg-type]
+)
 
 workflow.add_edge(START, "Supervisor")
 workflow.add_edge("StructureAnalyzer", "Supervisor")
