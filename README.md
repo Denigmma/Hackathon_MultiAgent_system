@@ -1,6 +1,8 @@
 # Hackathon_MultiAgent_system
 It-хакатон Сбер х Просто х Итмо мультиагентный ассистент химика-органика для планирования синтеза в лаборатории
 
+https://www.prostospb.team/hackathon-26#4
+
 cd Hackathon_MultiAgent_system
 python -m venv .venv
 source .venv/bin/activate
