@@ -1,55 +1,54 @@
-from __future__ import annotations
+from .models import llm
+from langchain_core.messages import SystemMessage, HumanMessage
 
-from typing import Sequence, Tuple
+def generate_answer(query, documents: list[tuple[str, str]], history: list[str] | None = None) -> str:
+    """
+    Генерирует ответ на основе полученного из интернета контекста (documents) и пользовательского запроса (query).
 
-from src.NeuralSearch.models import get_llm
+    :param query: Пользовательский вопрос
+    :param documents: Список строк с контекстом (результатами поиска), каждая строка включает ссылку
+    :return: Ответ, основанный только на этих документах
+    """
 
-Document = Tuple[str, str]
+    prepared_documents: list[tuple[str, str]] = []
+    for item in documents or []:
+        if isinstance(item, (tuple, list)) and len(item) >= 2:
+            prepared_documents.append((str(item[0]).strip(), str(item[1]).strip()))
+        else:
+            prepared_documents.append(("", str(item).strip()))
 
+    context = (
+        "\n\n".join(
+            f"[{i + 1}] {url or 'источник без URL'}\n{doc}"
+            for i, (url, doc) in enumerate(prepared_documents)
+            if doc
+        )
+        if prepared_documents
+        else "нет"
+    )
 
-SYSTEM_PROMPT = (
-    "Ты — помощник нейропоиска. Отвечай только на основе переданного контекста из веб-источников. "
-    "Не используй внешние знания и не проси пользователя прислать текст контекста: он уже дан в сообщении. "
-    "Если контекста недостаточно, прямо скажи об этом. "
-    "Верни основной ответ сплошным текстом без ссылок вида [1], (1), [2][3] и без встроенных сносок. "
-    "После основного ответа обязательно добавь отдельный раздел 'Литература' со списком использованных источников."
-)
+    history_block = ""
+    if history:
+        history_lines = [str(item).strip() for item in history if str(item).strip()]
+        if history_lines:
+            history_block = "\n\nИстория диалога:\n" + "\n".join(history_lines[-6:])
 
+    system_prompt = SystemMessage(
+        content=(
+            "Ты — помощник, который отвечает на вопросы пользователя исключительно на основе полученного контекста из интернета."
+            " Не используй знания из своей памяти."
+            " Каждое утверждение должно иметь ссылку на источник. "
+            "Если информации недостаточно, честно сообщи об этом."
+        )
+    )
 
-def generate_answer(query: str, documents: Sequence[Document], history: Sequence[str] | None = None) -> str:
-    llm = get_llm()
-    context = "\n\n".join(
-        f"Источник {i+1}: {url}\nФрагмент: {doc}" for i, (url, doc) in enumerate(documents)
-    ) if documents else "нет"
-    history_block = "\n".join(history[-6:]) if history else "нет"
+    human_prompt = HumanMessage(
+        content=(
+            f"Контекст из интернета:\n{context}\n\n"
+            f"Вопрос пользователя: \"{query}\""
+            f"{history_block}\n\n"
+            "Ответь на этот вопрос, используя только указанный контекст и добавляя ссылки на источники."
+        )
+    )
 
-    prompt = f"""
-Ниже уже приведен весь доступный веб-контекст для ответа. Используй только его.
-Не проси пользователя прислать текст ответа, контекста или ссылки отдельно.
-
-Контекст из интернета:
-{context}
-
-История диалога:
-{history_block}
-
-Вопрос пользователя: {query}
-
-Сформируй итоговый ответ на русском языке.
-Требования:
-- опирайся только на контекст выше;
-- не упоминай внутренние шаги пайплайна;
-- не задавай встречных вопросов;
-- если данных мало, честно скажи об ограничении;
-- в основном тексте ответа не вставляй ссылки в квадратных скобках и не делай сноски;
-- после основного ответа добавь раздел с заголовком 'Литература';
-- в разделе 'Литература' перечисли только реально использованные источники, по одному на строке;
-- формат каждой строки литературы: '- Название или краткое описание — URL';
-- если точное название страницы неочевидно, используй краткое описание по содержанию.
-""".strip()
-
-    return llm.complete_text(
-        prompt=prompt,
-        system_prompt=SYSTEM_PROMPT,
-        temperature=0.2,
-    ).strip()
+    return llm.invoke([system_prompt, human_prompt]).strip()

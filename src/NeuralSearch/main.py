@@ -1,106 +1,68 @@
-from __future__ import annotations
+import logging
 
-import argparse
-import json
-from dataclasses import asdict, dataclass
-from typing import List, Sequence, Tuple
-
-from src.NeuralSearch.answer_generator import generate_answer
-from src.NeuralSearch.paraphrase import ParaphaseMode, paraphrase_query
-from src.NeuralSearch.reranker import rerank_documents
-from src.NeuralSearch.web_search import search_web
-
-Document = Tuple[str, str]
+from .web_search import search_web
+from .reranker import rerank_documents
+from .answer_generator import generate_answer
 
 
-@dataclass
-class NeuralSearchResult:
-    user_query: str
-    refined_queries: List[str]
-    raw_documents: List[Document]
-    reranked_documents: List[Document]
-    answer: str
+FINAL_SOURCE_COUNT = 5
+RAW_SEARCH_RESULTS = 10
+logger = logging.getLogger(__name__)
 
 
-class NeuralSearchPipeline:
-    def __init__(self, expand_queries: bool = False, search_results: int = 6, top_n: int = 5):
-        self.expand_queries = expand_queries
-        self.search_results = search_results
-        self.top_n = top_n
+def ai_overview_pipeline(user_query, history=None):
+    if not isinstance(user_query, str) or not user_query.strip():
+        raise ValueError("user_query must be a non-empty string")
 
-    def run(self, user_query: str, history: Sequence[str] | None = None) -> NeuralSearchResult:
-        mode = ParaphaseMode.EXPAND if self.expand_queries else ParaphaseMode.SIMPLIFY
-        refined_queries = paraphrase_query(user_query, history=history, mode=mode)
-        collected_docs: List[Document] = []
-        seen_urls: set[str] = set()
+    normalized_query = user_query.strip()
 
-        for refined in refined_queries:
-            docs = search_web(refined, num_results=self.search_results)
-            for url, content in docs:
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                collected_docs.append((url, content))
+    raw_urls = search_web(normalized_query, num_results=RAW_SEARCH_RESULTS)
+    logger.info(
+        "Web pipeline search finished | user_query=%s | raw_url_count=%s",
+        normalized_query,
+        len(raw_urls or []),
+    )
+    if not raw_urls:
+        return "Не удалось найти релевантные источники в интернете."
 
-        reranked = rerank_documents(user_query, collected_docs, top_n=self.top_n)
-        answer = generate_answer(user_query, reranked, history=history)
-        return NeuralSearchResult(
-            user_query=user_query,
-            refined_queries=refined_queries,
-            raw_documents=collected_docs,
-            reranked_documents=reranked,
-            answer=answer,
-        )
+    from .url_parcer import build_search_corpus
 
+    parsed_docs = build_search_corpus(
+        normalized_query,
+        raw_urls,
+        max_urls=FINAL_SOURCE_COUNT,
+    )
+    logger.info(
+        "Web pipeline corpus built | user_query=%s | parsed_doc_count=%s",
+        normalized_query,
+        len(parsed_docs),
+    )
+    if not parsed_docs:
+        return "Не удалось извлечь содержимое из найденных веб-источников."
 
-def run_query(user_query: str, history: Sequence[str] | None = None) -> str:
-    return NeuralSearchPipeline().run(user_query, history=history).answer
+    top_docs = rerank_documents(
+        normalized_query,
+        parsed_docs,
+        top_n=FINAL_SOURCE_COUNT,
+    )
+    logger.info(
+        "Web pipeline rerank finished | user_query=%s | top_doc_count=%s",
+        normalized_query,
+        len(top_docs),
+    )
+    if not top_docs:
+        return "Не удалось отобрать релевантные веб-источники для ответа."
 
-
-def interactive_cli() -> None:
-    print("NeuralSearch CLI. Для выхода: exit/quit/выход")
-    history: List[str] = []
-    pipeline = NeuralSearchPipeline()
-
-    while True:
-        try:
-            query = input("\nВы> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nВыход.")
-            break
-
-        if not query:
-            continue
-        if query.lower() in {"exit", "quit", "q", "выход"}:
-            print("Выход.")
-            break
-
-        result = pipeline.run(query, history=history)
-        history.append(f"Пользователь: {query}")
-        history.append(f"AI-агент: {result.answer}")
-        print("\nОтвет:\n")
-        print(result.answer)
-
-
-def main() -> str:
-    parser = argparse.ArgumentParser(description="Run integrated NeuralSearch pipeline")
-    parser.add_argument("query", nargs="*", help="text query for NeuralSearch")
-    parser.add_argument("--expand", action="store_true", help="generate multiple paraphrases")
-    parser.add_argument("--json", action="store_true", help="print full pipeline result as JSON")
-    args = parser.parse_args()
-
-    if not args.query:
-        interactive_cli()
-
-    query = " ".join(args.query).strip()
-    pipeline = NeuralSearchPipeline(expand_queries=args.expand)
-    result = pipeline.run(query)
-
-    if args.json:
-        return json.dumps(asdict(result), ensure_ascii=False, indent=2)
-    else:
-        return result.answer
+    return generate_answer(normalized_query, top_docs, history=history)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    history = []
+    while True:
+        print("\n\n====================\n")
+        q = input("Введите ваш вопрос: ")
+        res = ai_overview_pipeline(q, history)
+        history.append("Пользователь: " + q)
+        history.append("AI-агент: " + res)
+
+        print("\n📝 Ответ:\n", res)
