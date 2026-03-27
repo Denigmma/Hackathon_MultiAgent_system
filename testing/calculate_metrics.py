@@ -1,5 +1,6 @@
 """
-export VSEGPT_API_KEY=sk-or-vv...
+export OPENROUTER_API_KEY=sk-or-vv...
+export OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 
 python /Users/mikhailgrudinin/Desktop/hackaton/Hackathon_MultiAgent_system/testing/calculate_metrics.py \
   --gt /Users/mikhailgrudinin/Desktop/hackaton/Hackathon_MultiAgent_system/testing/questions_gt.json \
@@ -30,8 +31,8 @@ DEFAULT_GT = "/Users/mikhailgrudinin/Desktop/hackaton/Hackathon_MultiAgent_syste
 DEFAULT_MODEL = "/Users/mikhailgrudinin/Desktop/hackaton/Hackathon_MultiAgent_system/testing/questions_model_answers.json"
 DEFAULT_CHATGPT = "/Users/mikhailgrudinin/Desktop/hackaton/Hackathon_MultiAgent_system/testing/questions_chatgpt_answers.json"
 
-DEFAULT_JUDGE_MODEL = os.getenv("VSEGPT_JUDGE_MODEL", "openai/gpt-3.5-turbo")
-DEFAULT_BASE_URL = os.getenv("VSEGPT_BASE_URL", "https://api.vsegpt.ru/v1/chat/completions")
+DEFAULT_JUDGE_MODEL = os.getenv("OPENROUTER_JUDGE_MODEL", "openai/gpt-3.5-turbo")
+DEFAULT_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/") + "/chat/completions"
 
 
 def parse_args() -> argparse.Namespace:
@@ -262,16 +263,16 @@ def extract_first_json_object(text: str) -> Dict[str, float]:
     raise ValueError("Judge response does not contain valid JSON")
 
 
-def call_vsegpt_judge(
+def call_openrouter_judge(
     question: str,
     gt_answer: str,
     candidate_answer: str,
     judge_model: str,
     timeout: int,
 ) -> Dict[str, float]:
-    api_key = os.getenv("VSEGPT_API_KEY")
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        raise RuntimeError("Environment variable VSEGPT_API_KEY is not set")
+        raise RuntimeError("Environment variable OPENROUTER_API_KEY is not set")
 
     system_prompt = (
         "Ты строгий LLM-as-a-judge для оценки ответов по химии.\n"
@@ -319,7 +320,7 @@ def call_vsegpt_judge(
     try:
         text = data["choices"][0]["message"]["content"]
     except Exception as e:
-        raise RuntimeError(f"Unexpected VseGPT response: {json.dumps(data, ensure_ascii=False)}") from e
+        raise RuntimeError(f"Unexpected OpenRouter response: {json.dumps(data, ensure_ascii=False)}") from e
 
     parsed = extract_first_json_object(text)
     return {
@@ -356,7 +357,7 @@ def compute_llm_judge_metrics(
     }
 
     for q, gt, pred in usable:
-        scores = call_vsegpt_judge(q, gt, pred, judge_model, timeout)
+        scores = call_openrouter_judge(q, gt, pred, judge_model, timeout)
         for key in buckets:
             buckets[key].append(scores[key])
 

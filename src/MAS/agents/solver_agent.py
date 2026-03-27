@@ -9,7 +9,7 @@ from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 
 try:
-    from src.NeuralSearch.main import main as neural_search_main  # type: ignore
+    from src.web_search_tool import search_web as neural_search_main  # type: ignore
 except Exception:
     neural_search_main = None  # type: ignore
 
@@ -20,8 +20,8 @@ except Exception:
 
 MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano")
 MODEL_PROVIDER_AGENT = os.getenv("MODEL_PROVIDER_AGENT", "openai")
-VSEGPT_API_KEY = os.getenv("VSEGPT_API_KEY", "")
-BASE_URL = os.getenv("URL", "https://api.vsegpt.ru/v1")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 AGENT_TIMEOUT_SECONDS = float(os.getenv("AGENT_TIMEOUT_SECONDS", "60"))
 MIN_ROUTE_TARGET = int(os.getenv("MIN_SYNTHESIS_ROUTE_TARGET", "3"))
 
@@ -35,12 +35,12 @@ class SynthesisProtocolSearchAgent:
         self.search_agent = None
         self.available_tools: List[str] = []
 
-        if VSEGPT_API_KEY:
+        if OPENROUTER_API_KEY:
             self.model = init_chat_model(
                 MODEL_AGENT,
                 model_provider=MODEL_PROVIDER_AGENT,
                 temperature=temperature,
-                api_key=VSEGPT_API_KEY,
+                api_key=OPENROUTER_API_KEY,
                 base_url=BASE_URL,
                 timeout=AGENT_TIMEOUT_SECONDS,
             )

@@ -1,15 +1,15 @@
 """
-Документация к модулю VseGPTWrapper
-===================================
+Документация к модулю OpenRouterWrapper
+======================================
 
-Этот модуль предоставляет удобную оболочку над OpenAI-совместимым API (настроенным по умолчанию на VseGPT).
+Этот модуль предоставляет удобную оболочку над OpenAI-совместимым API (настроенным по умолчанию на OpenRouter).
 Он поддерживает ведение истории диалога, потоковую генерацию, работу с JSON, а также продвинутый двухпроходный режим с самопроверкой (draft -> self-check -> final).
 
-Конфигурация (VseGPTConfig)
----------------------------
-Для инициализации клиента требуется объект конфигурации `VseGPTConfig`:
+Конфигурация (OpenRouterConfig)
+------------------------------
+Для инициализации клиента требуется объект конфигурации `OpenRouterConfig`:
 * api_key: str — Ваш API ключ.
-* base_url: str — URL API (по умолчанию "https://api.vsegpt.ru/v1").
+* base_url: str — URL API (по умолчанию "https://openrouter.ai/api/v1").
 * model: str — Имя модели (по умолчанию "anthropic/claude-3-haiku").
 * temperature: float — Креативность (по умолчанию 0.7).
 * max_tokens: int — Максимальное количество токенов (по умолчанию 3000).
@@ -18,8 +18,8 @@
 
 Инициализация
 -------------
-config = VseGPTConfig(api_key="ВАШ_КЛЮЧ")
-llm = VseGPTWrapper(config)
+config = OpenRouterConfig(api_key="ВАШ_КЛЮЧ")
+llm = OpenRouterWrapper(config)
 
 Универсальный метод (Рекомендуемый)
 -----------------------------------
@@ -78,25 +78,26 @@ from typing import Any, Dict, List, Optional, Union, Generator, Tuple
 
 from openai import OpenAI
 
-Message = Dict[str, str]
+Message = Dict[str, Any]
 
 
 @dataclass
-class VseGPTConfig:
+class OpenRouterConfig:
     api_key: str
-    base_url: str = "https://api.vsegpt.ru/v1"
+    base_url: str = "https://openrouter.ai/api/v1"
     model: str = "anthropic/claude-3-haiku"
     temperature: float = 0.7
     max_tokens: int = None # type: ignore
     n: int = 1
+    reasoning_enabled: bool = False
     default_headers: Dict[str, str] = field(
         default_factory=lambda: {"X-Title": "My App"}
     )
 
 
-class VseGPTWrapper:
+class OpenRouterWrapper:
     """
-    Оболочка для работы с VseGPT через OpenAI-compatible API.
+    Оболочка для работы с OpenRouter через OpenAI-compatible API.
 
     Добавлено:
     - двухпроходный режим: draft -> self-check -> final
@@ -104,7 +105,7 @@ class VseGPTWrapper:
     - безопасный "reasoning mode" без раскрытия скрытого хода мыслей
     """
 
-    def __init__(self, config: VseGPTConfig):
+    def __init__(self, config: OpenRouterConfig):
         self.config = config
         self.client = OpenAI(
             api_key=config.api_key,
@@ -151,6 +152,38 @@ class VseGPTWrapper:
         msg = response.choices[0].message
         return getattr(msg, "reasoning", None)
 
+    def _extract_reasoning_details(self, response: Any) -> Any:
+        msg = response.choices[0].message
+        return getattr(msg, "reasoning_details", None)
+
+    def _normalize_response_format(self, response_format: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not response_format:
+            return None
+
+        normalized = dict(response_format)
+        response_type = str(normalized.get("type") or "").strip()
+
+        # OpenRouter-compatible Chat Completions accepts `text` or `json_object`.
+        # The legacy project used `json_output`, so transparently upgrade it here.
+        if response_type == "json_output":
+            normalized["type"] = "json_object"
+
+        return normalized
+
+    def _normalize_extra_body(self, extra_body: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        normalized: Dict[str, Any] = {}
+        if isinstance(extra_body, dict):
+            normalized.update(extra_body)
+
+        if self.config.reasoning_enabled:
+            reasoning = normalized.get("reasoning")
+            if not isinstance(reasoning, dict):
+                reasoning = {}
+            reasoning.setdefault("enabled", True)
+            normalized["reasoning"] = reasoning
+
+        return normalized or None
+
     def _call_chat_completion(
         self,
         merged_messages: List[Message],
@@ -161,6 +194,7 @@ class VseGPTWrapper:
         extra_headers: Optional[Dict[str, str]] = None,
         **kwargs,
     ) -> Any:
+        normalized_extra_body = self._normalize_extra_body(kwargs.pop("extra_body", None))
         return self.client.chat.completions.create(
             model=model or self.config.model,
             messages=merged_messages,
@@ -168,6 +202,7 @@ class VseGPTWrapper:
             max_tokens=self.config.max_tokens if max_tokens is None else max_tokens,
             n=self.config.n if n is None else n,
             extra_headers=extra_headers or self.config.default_headers,
+            extra_body=normalized_extra_body,
             **kwargs,
         )  # type: ignore
 
@@ -242,6 +277,7 @@ class VseGPTWrapper:
 
         content = self._extract_text(response)
         reasoning = self._extract_reasoning(response)
+        reasoning_details = self._extract_reasoning_details(response)
 
         if save_to_history:
             if system_prompt and not use_history and not self.history:
@@ -255,11 +291,15 @@ class VseGPTWrapper:
                 self.history.insert(0, {"role": "system", "content": system_prompt})
 
             self.history.append({"role": "user", "content": user_prompt})
-            self.history.append({"role": "assistant", "content": content})
+            assistant_message: Message = {"role": "assistant", "content": content}
+            if reasoning_details is not None:
+                assistant_message["reasoning_details"] = reasoning_details
+            self.history.append(assistant_message)
 
         return {
             "content": content,
             "reasoning": reasoning,
+            "reasoning_details": reasoning_details,
             "raw": response,
         }
 
@@ -324,6 +364,7 @@ class VseGPTWrapper:
         return {
             "content": self._extract_text(response),
             "reasoning": self._extract_reasoning(response),
+            "reasoning_details": self._extract_reasoning_details(response),
             "raw": response,
         }
 
@@ -357,6 +398,7 @@ class VseGPTWrapper:
             max_tokens=self.config.max_tokens if max_tokens is None else max_tokens,
             n=self.config.n if n is None else n,
             extra_headers=extra_headers or self.config.default_headers,
+            extra_body=self._normalize_extra_body(kwargs.pop("extra_body", None)),
             stream=True,
             **kwargs,
         )
@@ -404,8 +446,12 @@ class VseGPTWrapper:
             **kwargs,
         )
 
-        if response_format is not None:
-            request_kwargs["response_format"] = response_format
+        normalized_response_format = self._normalize_response_format(response_format)
+        if normalized_response_format is not None:
+            request_kwargs["response_format"] = normalized_response_format
+        normalized_extra_body = self._normalize_extra_body(request_kwargs.pop("extra_body", None))
+        if normalized_extra_body is not None:
+            request_kwargs["extra_body"] = normalized_extra_body
 
         response = self.client.chat.completions.create(**request_kwargs)
 
@@ -419,6 +465,7 @@ class VseGPTWrapper:
         return {
             "data": data,
             "raw_text": text,
+            "reasoning_details": self._extract_reasoning_details(response),
         }
 
     def complete_text(
@@ -465,7 +512,7 @@ class VseGPTWrapper:
             temperature=temperature,
             max_tokens=max_tokens,
             extra_headers=extra_headers,
-            response_format={"type": "json_output"},
+            response_format={"type": "json_object"},
             **kwargs,
         )
         return result["data"]
@@ -533,7 +580,7 @@ class VseGPTWrapper:
             temperature=temperature,
             max_tokens=max_tokens,
             extra_headers=extra_headers,
-            response_format={"type": "json_output"},
+            response_format={"type": "json_object"},
             **kwargs,
         )
 
@@ -684,7 +731,7 @@ class VseGPTWrapper:
                     user_prompt=prompt,
                     system_prompt=system_prompt,
                     use_history=True,
-                    response_format={"type": "json_output"},
+                    response_format={"type": "json_object"},
                     **kwargs,
                 )
 

@@ -11,13 +11,11 @@
 from __future__ import annotations
 
 import os
-import re
 import warnings
 from typing import Any, Dict
 
 from dotenv import load_dotenv
 from loguru import logger
-from rdkit import Chem
 
 load_dotenv()
 warnings.filterwarnings(
@@ -26,72 +24,11 @@ warnings.filterwarnings(
 )
 
 from src.MAS.orchestrator.agent_orchestrator import app
-
-GRAPH_RECURSION_LIMIT = int(os.getenv("GRAPH_RECURSION_LIMIT", "25"))
-SMILES_CANDIDATE_RE = re.compile(r"[A-Za-z0-9@+\-\[\]\(\)=#$\\/%.]+")
-
-
-def _extract_supervisor_answer(state: Dict[str, Any]) -> str:
-    """Возвращает последний финальный ответ Supervisor из ``state.history``."""
-    history = state.get("history", [])
-    if not isinstance(history, list):
-        return "Supervisor не вернул корректную историю ответов."
-
-    for event in reversed(history):
-        if not isinstance(event, dict):
-            continue
-        if event.get("agent") != "Supervisor":
-            continue
-
-        output = event.get("output")
-        if isinstance(output, dict):
-            summary = output.get("summary") or output.get("prediction")
-            if summary:
-                return str(summary)
-            return str(output)
-
-        if output is not None:
-            return str(output)
-
-    return "Supervisor не вернул финальный ответ."
-
-
-def _extract_smiles_from_text(text: str) -> str:
-    """Пытается достать первый валидный SMILES из пользовательского текста."""
-    text = (text or "").strip()
-    if not text:
-        return ""
-
-    for token in SMILES_CANDIDATE_RE.findall(text):
-        candidate = token.strip(".,;:!?\"'")
-        if not candidate:
-            continue
-
-        mol = Chem.MolFromSmiles(candidate)
-        if mol is None:
-            continue
-
-        return Chem.MolToSmiles(mol, canonical=True)
-
-    return ""
-
-
-def _build_initial_state(user_input: str) -> Dict[str, Any]:
-    """Собирает начальное состояние графа для одного пользовательского запроса."""
-    smiles = _extract_smiles_from_text(user_input)
-    return {
-        "task": user_input,
-        "target_molecule": smiles,
-        "synthesis_protocol_task": user_input,
-        "literature_query": user_input,
-        "history": [],
-        "properties": {},
-        "synthesis_protocol_result": {},
-        "literature_result": {},
-        "agent_interactions": {},
-        "supervisor_trace": [],
-        "next_worker": "",
-    }
+from src.mas_runtime import (
+    GRAPH_RECURSION_LIMIT,
+    build_initial_state,
+    extract_supervisor_answer,
+)
 
 
 def main() -> int:
@@ -104,13 +41,13 @@ def main() -> int:
             print("Пустой запрос.")
             return 1
 
-        initial_state = _build_initial_state(user_input)
+        initial_state = build_initial_state(user_input)
         result = app.invoke(  # type: ignore[arg-type]
             initial_state,
             {"recursion_limit": GRAPH_RECURSION_LIMIT},
         )
 
-        answer = _extract_supervisor_answer(result)
+        answer = extract_supervisor_answer(result)
         print(f"\nОтвет модели:\n{answer}")
         return 0
 

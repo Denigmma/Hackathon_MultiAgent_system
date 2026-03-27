@@ -11,15 +11,17 @@ from langgraph.graph import END, START, StateGraph
 from loguru import logger
 from rdkit import Chem
 
-from src.llm_client import VseGPTConfig, VseGPTWrapper
+from src.llm_client import OpenRouterConfig, OpenRouterWrapper
 from src.MAS.agents.literature_rag_agent import LiteratureRAGAgent
 from src.MAS.agents.properties_agent import StructurePropertiesAgent
 from src.MAS.agents.solver_agent import SynthesisProtocolSearchAgent
 
-API_KEY = os.getenv("VSEGPT_API_KEY", "")
-BASE_URL = os.getenv("URL", "https://api.vsegpt.ru/v1")
+API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 MODEL_ORCHESTOR = os.getenv("MODEL_ORCHESTOR", "openai/gpt-5.4-nano-thinking-xhigh")
 MODEL_AGENT = os.getenv("MODEL_AGENT", "openai/gpt-5.4-nano-thinking-xhigh")
+MODEL_ORCHESTOR_FALLBACK = os.getenv("MODEL_ORCHESTOR_FALLBACK", MODEL_AGENT).strip()
+OPENROUTER_ENABLE_REASONING = os.getenv("OPENROUTER_ENABLE_REASONING", "1").strip().lower() not in {"0", "false", "no", "off"}
 MAX_WORKER_STEPS = int(os.getenv("MAX_WORKER_STEPS", "8"))
 SUPERVISOR_TIMEOUT_SECONDS = float(os.getenv("SUPERVISOR_TIMEOUT_SECONDS", "45"))
 LOG_VALUE_MAX_CHARS = int(os.getenv("LOG_VALUE_MAX_CHARS", "1200"))
@@ -47,14 +49,15 @@ class TeamState(TypedDict, total=False):
     supervisor_trace: Annotated[List[Dict[str, Any]], operator.add]
 
 
-llm: VseGPTWrapper | None = None
+llm: OpenRouterWrapper | None = None
 if API_KEY:
-    config = VseGPTConfig(
+    config = OpenRouterConfig(
         base_url=BASE_URL,
         api_key=API_KEY,
         model=MODEL_ORCHESTOR,
+        reasoning_enabled=OPENROUTER_ENABLE_REASONING,
     )
-    llm = VseGPTWrapper(config)
+    llm = OpenRouterWrapper(config)
 
 
 def _to_log_text(value: Any, max_chars: int = LOG_VALUE_MAX_CHARS) -> str:
@@ -77,11 +80,20 @@ def _parse_available_agents(raw_value: str) -> List[str]:
         return ALL_WORKER_NODES + ["FINISH"]
 
     filtered = [item for item in raw_items if item in KNOWN_NODES]
+    unknown = [item for item in raw_items if item not in KNOWN_NODES]
     if not filtered:
         logger.warning(
             "AVAILABLE_AGENTS содержит только неизвестные узлы. Использую дефолтный список."
         )
         return ALL_WORKER_NODES + ["FINISH"]
+
+    if unknown:
+        logger.warning(
+            "AVAILABLE_AGENTS содержит устаревшие или неизвестные узлы: {}. "
+            "Добавляю все актуальные worker-агенты, чтобы не ломать маршрутизацию.",
+            unknown,
+        )
+        filtered = list(dict.fromkeys(filtered + ALL_WORKER_NODES))
 
     if "FINISH" not in filtered:
         filtered.append("FINISH")
@@ -114,6 +126,12 @@ def _extract_smiles_from_text(text: str) -> str:
     for token in SMILES_CANDIDATE_RE.findall(text):
         candidate = token.strip(".,;:!?\"'")
         if not candidate:
+            continue
+        if len(candidate) < 2:
+            continue
+        if candidate[0] in "-()":
+            continue
+        if not re.search(r"[A-Za-z]", candidate):
             continue
         mol = Chem.MolFromSmiles(candidate)
         if mol is None:
@@ -483,6 +501,9 @@ def _looks_like_literature_task(state: TeamState) -> bool:
             "данные",
             "rag",
             "paper",
+            "погод",
+            "интернет",
+            "поиск",
         ]
     )
 
@@ -567,6 +588,34 @@ def _validate_or_repair_decision(
         return alternative, user_message, f"{reason}_rerouted"
 
     return next_worker, user_message, reason
+
+
+def _supervisor_models_to_try() -> List[str]:
+    models: List[str] = []
+    for candidate in [MODEL_ORCHESTOR, MODEL_ORCHESTOR_FALLBACK, MODEL_AGENT]:
+        value = str(candidate or "").strip()
+        if value and value not in models:
+            models.append(value)
+    return models
+
+
+def _is_rate_limited_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "429" in text or "rate limit" in text or "rate-limited" in text or "too many requests" in text
+
+
+def _build_supervisor_llm_error_message(exc: Exception, attempted_models: List[str]) -> str:
+    models_text = ", ".join(attempted_models) if attempted_models else MODEL_ORCHESTOR
+    if _is_rate_limited_error(exc):
+        return (
+            "Главный агент временно не смог обратиться к модели через OpenRouter: "
+            f"для модели {models_text} сработал лимит запросов. "
+            "Повторите запрос чуть позже или смените MODEL_ORCHESTOR на менее загруженную модель."
+        )
+    return (
+        "Главный агент временно недоступен из-за ошибки обращения к модели через OpenRouter. "
+        f"Проверьте MODEL_ORCHESTOR/OPENROUTER_API_KEY и повторите запрос. Детали: {exc}"
+    )
 
 
 def _error_node(agent_name: str, error: Exception):
@@ -723,18 +772,44 @@ def supervisor_node(state: TeamState) -> Dict[str, Any]:
             f"Структуры взаимодействия с агентами:\n{_agent_interactions_as_text(agent_interactions)}"
         )
 
-        started_llm = perf_counter()
-        try:
-            result = llm.ask(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                json_mode=True,
-                temperature=0.0,
-                timeout=SUPERVISOR_TIMEOUT_SECONDS,
-            )
-            llm_elapsed = perf_counter() - started_llm
-            logger.info("Supervisor: ответ LLM за {:.2f} c: {}", llm_elapsed, _to_log_text(result))
-            proposed_next, user_message = _parse_supervisor_decision(result)
+        llm_result: Dict[str, Any] | None = None
+        attempted_models = _supervisor_models_to_try()
+        last_exc: Exception | None = None
+
+        for model_name in attempted_models:
+            started_llm = perf_counter()
+            try:
+                result = llm.ask(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    json_mode=True,
+                    model=model_name,
+                    temperature=0.0,
+                    timeout=SUPERVISOR_TIMEOUT_SECONDS,
+                )
+                llm_elapsed = perf_counter() - started_llm
+                logger.info(
+                    "Supervisor: ответ LLM model={} за {:.2f} c: {}",
+                    model_name,
+                    llm_elapsed,
+                    _to_log_text(result),
+                )
+                llm_result = result
+                break
+            except Exception as exc:
+                llm_elapsed = perf_counter() - started_llm
+                last_exc = exc
+                logger.error(
+                    "Supervisor: ошибка вызова LLM model={} за {:.2f} c: {}",
+                    model_name,
+                    llm_elapsed,
+                    exc,
+                )
+                if not _is_rate_limited_error(exc):
+                    break
+
+        if llm_result is not None:
+            proposed_next, user_message = _parse_supervisor_decision(llm_result)
             if proposed_next == "FINISH" and not user_message:
                 next_worker, user_message, reason = _heuristic_supervisor_decision(state)
                 reason = f"llm_unparsed->{reason}"
@@ -742,11 +817,14 @@ def supervisor_node(state: TeamState) -> Dict[str, Any]:
                 next_worker, user_message, reason = _validate_or_repair_decision(
                     state, proposed_next, user_message, "llm_route"
                 )
-        except Exception as exc:
-            llm_elapsed = perf_counter() - started_llm
-            logger.error("Supervisor: ошибка вызова LLM за {:.2f} c: {}", llm_elapsed, exc)
+        else:
             next_worker, user_message, reason = _heuristic_supervisor_decision(state)
-            reason = f"supervisor_llm_error->{reason}"
+            if last_exc is not None and reason in {"heuristic_insufficient_data", "heuristic_empty_task"}:
+                next_worker = "FINISH"
+                user_message = _build_supervisor_llm_error_message(last_exc, attempted_models)
+                reason = "supervisor_llm_unavailable"
+            elif last_exc is not None:
+                reason = f"supervisor_llm_error->{reason}"
 
     logger.info("Supervisor решил: передаю задачу -> {}", next_worker)
 
