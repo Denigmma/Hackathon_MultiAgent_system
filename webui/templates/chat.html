@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+    <div class="page-ambient"></div>
+    <div class="page-grid"></div>
+    <div class="page-glow page-glow-left"></div>
+    <div class="page-glow page-glow-right"></div>
+
+    <div id="login-overlay" class="login-overlay">
+        <div class="login-card">
+            <div class="login-kicker">МУЛЬТИАГЕНТНАЯ СИСТЕМА</div>
+            <h1 class="login-title">Введите логин</h1>
+            <p class="login-text">
+                Под этим логином будут создаваться и сохраняться ваши чаты.
+            </p>
+            <label class="login-label" for="login-input">Логин</label>
+            <input
+                id="login-input"
+                class="login-input"
+                type="text"
+                maxlength="64"
+                placeholder="Например, adminchik"
+                autocomplete="username"
+            />
+            <button id="login-btn" class="neon-btn login-btn">Войти</button>
+        </div>
+    </div>
+
+    <div class="app">
+        <aside class="sidebar">
+            <button id="new-chat-btn" class="neon-btn new-chat-btn" disabled>+ Новый чат</button>
+
+            <div class="chat-list-shell">
+                <div id="chat-list" class="chat-list"></div>
+            </div>
+
+            <div class="user-panel">
+                <div class="user-panel-label">Пользователь</div>
+                <div id="user-name" class="user-panel-name">Не выбран</div>
+                <button id="rate-btn" class="ghost-btn">Оценить</button>
+                <button id="logout-btn" class="ghost-btn" disabled>Выйти</button>
+            </div>
+        </aside>
+
+        <main class="main-panel">
+            <header class="brand-banner">
+                <div class="brand-thanks">СПАСИБО</div>
+                <div class="brand-row">
+                    <span class="brand brand-sber">СБЕР</span>
+                    <span class="brand-separator">×</span>
+                    <span class="brand brand-prosto">ПРОСТО</span>
+                    <span class="brand-separator">×</span>
+                    <span class="brand brand-itmo">ИТМО</span>
+                </div>
+                <div id="active-chat-caption" class="active-chat-caption">Выберите или создайте чат, чтобы начать работу</div>
+            </header>
+
+            <section id="messages-container" class="messages-container">
+                <div class="empty-state">
+                    <div class="empty-state-title">Здесь появится переписка</div>
+                    <div class="empty-state-text">
+                        Создайте новый чат и отправьте запрос системе.
+                    </div>
+                </div>
+            </section>
+
+            <footer class="composer">
+                <div class="composer-box">
+                    <textarea
+                        id="message-input"
+                        class="message-input"
+                        rows="3"
+                        maxlength="500"
+                        placeholder="Напишите сообщение..."
+                        disabled
+                    ></textarea>
+                    <button id="send-btn" class="send-btn" disabled>Отправить</button>
+                </div>
+                <div class="composer-note">
+                    Enter — отправить, Shift + Enter — новая строка. Лимит: до 500 символов.
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="/static/js/chat.js"></script>
+</body>
+</html>
