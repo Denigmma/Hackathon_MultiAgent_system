@@ -207,6 +207,12 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# dir with chat cache
+.tmp_example_ui/
+storage/chat_app.sqlite3
+storage/chat_app.sqlite3-shm
+storage/chat_app.sqlite3-wal
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
